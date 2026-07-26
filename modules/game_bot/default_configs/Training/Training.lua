@@ -33,6 +33,22 @@ local UTILITY_SPELL = "utevo gran lux" -- open to every vocation on this server;
                                         -- leave as "" to disable
 local UTILITY_INTERVAL_MS = 1100 -- Great Light's real cooldown is 1000ms
 
+-- Mana safety: don't bother casting when you can't pay for it. The cost is
+-- looked up automatically from the client's own spell list using the spell's
+-- words (Great Light works out to 60), so normally you can leave these at 0.
+-- This server's CUSTOM spells are not in that stock list though - for those the
+-- lookup finds nothing and the spell is simply always attempted. If you'd
+-- rather it held back, put the real mana cost in here by hand.
+local ATTACK_MANA_COST = 0 -- 0 = auto-detect from the spell's words
+local UTILITY_MANA_COST = 0 -- 0 = auto-detect from the spell's words
+
+-- Eat once your remaining regeneration drops below this many seconds. Higher =
+-- eats sooner and keeps you topped up; lower = squeezes more out of each item.
+-- Eating while already full is refused by the server anyway, so raising this
+-- wastes nothing - it just means you top up earlier.
+local EAT_BELOW_SECONDS = 400
+local EAT_CHECK_MS = 2000 -- how often to check hunger; the check is cheap
+
 -- Every edible item in the game (69 of them), as CLIENT item ids: meats, fish,
 -- all the fruits, every mushroom, breads, cheeses, cakes, sweets and veggies.
 --
@@ -71,19 +87,33 @@ local function findClosestMonster()
   return closest
 end
 
+-- True if the spell is affordable right now. An unknown cost (a custom spell the
+-- client's list doesn't know) counts as affordable - better to try and let the
+-- server refuse it than to never cast at all.
+local function hasManaFor(words, configuredCost)
+  local cost = configuredCost
+  if not cost or cost <= 0 then
+    cost = getSpellManaCost(words)
+  end
+  if cost <= 0 then return true end
+  return player:getMana() >= cost
+end
+
 macro(ATTACK_INTERVAL_MS, "Train - Attack", function()
   local target = findClosestMonster()
   if not target then return end
+  -- Keep the target even when out of mana, so melee damage carries on.
   if g_game.getAttackingCreature() ~= target then
     g_game.attack(target)
   end
+  if not hasManaFor(ATTACK_SPELL, ATTACK_MANA_COST) then return end
   say(ATTACK_SPELL)
 end)
 
 macro(UTILITY_INTERVAL_MS, "Train - Utility Spell", function()
-  if UTILITY_SPELL ~= "" then
-    say(UTILITY_SPELL)
-  end
+  if UTILITY_SPELL == "" then return end
+  if not hasManaFor(UTILITY_SPELL, UTILITY_MANA_COST) then return end
+  say(UTILITY_SPELL)
 end)
 
 -- The client only knows what's inside a bag once the server has actually
@@ -122,28 +152,33 @@ local function openAllContainers()
   end
 end
 
+-- Returns true if it found food and ate something.
 local function eatFromOpenContainers()
   for _, container in pairs(g_game.getContainers()) do
     for _, item in ipairs(container:getItems()) do
       for _, foodId in ipairs(FOOD_ITEMS) do
         if item:getId() == foodId then
-          return g_game.use(item)
+          g_game.use(item)
+          return true
         end
       end
     end
   end
+  return false
 end
 
 -- getRealRegenerationTime() is the real hunger signal, pushed by the server
 -- over a custom opcode since the native 8.60 stats packet never carries it
--- (see game_bot/functions/player.lua). Only bothers opening bags/searching
--- once actually needed instead of blindly on a timer.
+-- (see game_bot/functions/player.lua). It reads math.huge until the first
+-- packet lands, so a fresh login never looks "starving" and eats needlessly.
 --
--- g_game.open() is a request to the server, not instant - a bag's contents
--- only arrive after a round trip, so the food search has to happen a moment
--- later rather than in the same tick that opens the bag.
-macro(2000, "Train - Eat", function()
-  if getRealRegenerationTime() > 400 then return end
+-- Food that's already in an open bag gets eaten straight away. Only if none is
+-- visible do we bother opening bags - and g_game.open() is a request to the
+-- server, not instant, so that retry has to wait a moment for the contents to
+-- actually arrive rather than searching in the same tick.
+macro(EAT_CHECK_MS, "Train - Eat", function()
+  if getRealRegenerationTime() > EAT_BELOW_SECONDS then return end
+  if eatFromOpenContainers() then return end
   openAllContainers()
   schedule(300, eatFromOpenContainers)
 end)

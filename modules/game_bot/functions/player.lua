@@ -32,6 +32,31 @@ context.stamina = function() return context.player:getStamina() end
 -- data. game_skills/skills.lua receives the real value over a custom opcode
 -- instead (see Player:sendFood on the server) -- this is the bridge to it.
 context.getRealRegenerationTime = function() return modules.game_skills.getRealRegenerationTime() end
+
+-- Mana cost of a spell, looked up by its words ("utevo gran lux" -> 60). Reads
+-- the client's own spell table (gamelib/spells.lua), which the bot sandbox
+-- cannot see directly. Returns 0 for anything not in that table -- notably this
+-- server's CUSTOM spells, which are not in the stock list -- so callers should
+-- treat 0 as "unknown, don't block the cast" rather than "free".
+local spellManaCache = {}
+context.getSpellManaCost = function(words)
+  if type(words) ~= 'string' or words:len() < 1 then return 0 end
+  local key = words:lower():trim()
+  if spellManaCache[key] ~= nil then return spellManaCache[key] end
+  local cost = 0
+  local list = SpellInfo and SpellInfo['Default']
+  if list then
+    for _, info in pairs(list) do
+      if type(info) == 'table' and type(info.words) == 'string'
+         and info.words:lower() == key then
+        cost = tonumber(info.mana) or 0
+        break
+      end
+    end
+  end
+  spellManaCache[key] = cost
+  return cost
+end
 context.voc = function() return context.player:getVocation() end
 context.vocation = function() return context.player:getVocation() end
 
