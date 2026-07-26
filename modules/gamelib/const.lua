@@ -288,7 +288,8 @@ MessageModes = {
 
 -- TheOtServer custom RSA public key (regenerated 2026-07-04 to replace the well-known
 -- OTServ default key). Must stay in lockstep with the server's private key.pem — if you
--- ever rotate the server key, update this modulus AND repack otcv8.zip.
+-- ever rotate the server key, update this modulus and cut a new release (build-release.py
+-- picks up loose module changes automatically; there is no separate zip to repack).
 OTSERV_RSA  = "1363528494893166153804796111126916906646966579486255434107002952" ..
               "5095002610232707581460627313699162251273816476286336799261408067" ..
               "8576602977121925033437908653377097288457824913486281693073698901" ..
