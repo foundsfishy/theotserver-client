@@ -149,6 +149,39 @@ end
 -- DURATION_MS constant in data/lib/limitbreaksystem.lua on the server.
 local LIMITBREAK_OPCODE = 63
 local LIMITBREAK_DURATION_SECS = 90
+-- Gauge cost multiplier per break level, mirroring LBSgetHPforL on the server
+-- (data/lib/limitbreaksystem.lua): a move's threshold is
+-- maxHealth * 1.10 * breakLevel. Declared up here because BOTH the gauge bar
+-- and the pip row derive percentages from it, and the bar's painter sits above
+-- the pip code -- a local declared lower down would simply not be in scope
+-- there, resolving to a nil global instead.
+local LIMITBREAK_GAUGE_COST_PER_LEVEL = 1.10
+
+-- One palette for the whole Limit Break block -- bars, pips, mode buttons and
+-- row text all read from these three steps, so the block looks like a single
+-- system instead of a stack of unrelated rows. Three steps, not one flat gold:
+-- flattening everything to the brightest colour destroys the hierarchy that
+-- makes it scannable.
+--   PRIMARY   live / ready / selected      (the thing you act on)
+--   SECONDARY unlocked but still charging  (supporting rows and labels)
+--   MUTED     locked / inert
+local LBS_TEXT_PRIMARY   = '#FFCC00'
+local LBS_TEXT_SECONDARY = '#d9a63a'
+local LBS_TEXT_MUTED     = '#5f5e5a'
+
+-- Pip colours. Deliberately readable without text: at 26px wide there is room
+-- for one digit and nothing else, so state has to be carried by colour and the
+-- fill bar, with the detail living in the hover tooltip.
+local PIP_COLOR_READY_TEXT   = LBS_TEXT_PRIMARY    -- full: can be fired right now
+local PIP_COLOR_READY_BORDER = LBS_TEXT_PRIMARY
+local PIP_COLOR_READY_BG     = '#5a3a06'
+local PIP_COLOR_CHARGE_TEXT  = LBS_TEXT_SECONDARY  -- unlocked, still filling
+local PIP_COLOR_CHARGE_BG    = '#3d2a08'
+local PIP_COLOR_LOCKED_TEXT  = LBS_TEXT_MUTED      -- not unlocked yet
+local PIP_COLOR_LOCKED_BG    = '#232320'
+local PIP_COLOR_IDLE_BORDER  = '#7a5a10'
+local PIP_COLOR_LOCKED_BORDER = '#3f3f3b'
+local PIP_FILL_COLOR         = '#EF9F27'
 
 function onLimitBreakOpcode(protocol, opcode, buffer)
   if not skillsWindow then return end
@@ -159,8 +192,12 @@ function onLimitBreakOpcode(protocol, opcode, buffer)
 
   toggleSkill('limitBreak', true)
   toggleSkill('lbsSeparatorBottom', true)
+  applyLimitBreakTextStyle()
 
   if mode == 1 then
+    -- Timer row appears only while a Break runs; the gauge row above is left
+    -- alone so it keeps showing the NEXT charge building during these 90s.
+    toggleSkill('limitBreakTimer', true)
     -- Active Break: limitBreakActive/limitBreakSecsLeft are read by the
     -- persistent 1s ticker (limitBreakTick, started once in refresh() -- same
     -- pattern as expSpeedEvent/checkExpSpeed above) so the bar keeps draining
@@ -174,10 +211,60 @@ function onLimitBreakOpcode(protocol, opcode, buffer)
     updateLimitBreakBar()
   else
     limitBreakActive = false
+    toggleSkill('limitBreakTimer', false)
+    -- The server's own percentage is authoritative, so prefer it here; the
+    -- locally-derived one (setLimitBreakGaugeBar, from the raw-gauge opcode)
+    -- only has to cover the case this packet can't: while mode 1 is carrying
+    -- the countdown, no gauge percentage is on the wire at all.
     local percent = math.max(0, value)
     setSkillValue('limitBreak', percent .. '%')
     setSkillPercent('limitBreak', percent, tr('Anger gauge: %s percent', percent), '#FFCC00')
   end
+end
+
+-- Tint the block's row text to the shared palette. Static, so it only has to
+-- run when the rows are revealed -- the 'Break time' VALUE is the exception and
+-- is repainted every tick in updateLimitBreakBar, tracking the bar's own
+-- yellow -> red fade so the number telegraphs urgency alongside it.
+function applyLimitBreakTextStyle()
+  setSkillNameColor('limitBreak', LBS_TEXT_PRIMARY)
+  setSkillColor('limitBreak', LBS_TEXT_PRIMARY)
+  setSkillNameColor('limitBreakTimer', LBS_TEXT_SECONDARY)
+  setSkillNameColor('lbsNext', LBS_TEXT_SECONDARY)
+  setSkillColor('lbsNext', LBS_TEXT_SECONDARY)
+  -- Give 'Next' the same frame as a charging pip so it reads as part of the
+  -- block. Uses the CHARGE (secondary) shade rather than READY gold: it is
+  -- informational, and painting it the brightest colour would make it compete
+  -- with the pip that is actually ready to fire.
+  local nextRow = skillsWindow and skillsWindow:recursiveGetChildById('lbsNext')
+  if nextRow then
+    nextRow:setBackgroundColor(PIP_COLOR_CHARGE_BG)
+    nextRow:setBorderColor(PIP_COLOR_IDLE_BORDER)
+  end
+end
+
+-- The row's value is truncated to LIMITBREAK_VALUE_MAX_CHARS, so "tell me the
+-- rest" is the natural action for it -- and now that it is framed like a button,
+-- it needs one: a control that looks pressable and does nothing is worse than
+-- plain text. !moves prints the full per-move unlock breakdown.
+function onLimitBreakNextClick()
+  g_game.talk('!moves')
+end
+
+-- Paint the anger-gauge row from the RAW gauge (opcode 69) rather than a
+-- server-sent percentage. Needed because opcode 63 stops reporting the gauge
+-- while a Break is active -- mode 1 carries seconds-left instead -- yet the
+-- gauge genuinely keeps filling during those 90 seconds. Same arithmetic the
+-- pips use: threshold = maxHealth * 1.10 * activeBreakLevel.
+function setLimitBreakGaugeBar()
+  if limitBreakActiveLevel == nil or limitBreakActiveLevel <= 0 then return end
+  local localPlayer = g_game.getLocalPlayer()
+  if not localPlayer then return end
+  local threshold = localPlayer:getMaxHealth() * LIMITBREAK_GAUGE_COST_PER_LEVEL * limitBreakActiveLevel
+  if threshold <= 0 then return end
+  local percent = math.min(100, math.floor(limitBreakGauge * 100 / threshold))
+  setSkillValue('limitBreak', percent .. '%')
+  setSkillPercent('limitBreak', percent, tr('Anger gauge: %s percent', percent), '#FFCC00')
 end
 
 -- Separate from LIMITBREAK_OPCODE: that one is pure numbers sent every combat
@@ -206,18 +293,292 @@ function onLimitBreakMovesOpcode(protocol, opcode, buffer)
   if not skillsWindow then return end
   local moveName, progress = buffer:match('^([^|]*)|(.*)$')
   if not moveName then return end
-  toggleSkill('lbsMove', true)
+  -- The 'Move' text row was replaced by the clickable pip row (opcode 68),
+  -- which shows the active move by highlighting its pip. Only the 'Next'
+  -- unlock-progress row is still driven from this packet -- pips convey fill
+  -- state, not progress toward the next unlock.
   toggleSkill('lbsNext', true)
-  setSkillValue('lbsMove', truncateForDisplay(moveName))
+  setSkillNameColor('lbsNext', LBS_TEXT_SECONDARY)
+  setSkillColor('lbsNext', LBS_TEXT_SECONDARY)
   setSkillValue('lbsNext', truncateForDisplay(progress))
-  setSkillTooltip('lbsMove', moveName)
   setSkillTooltip('lbsNext', progress)
 end
 
+-- === Limit Break move picker (the clickable pip row) ==========================
+-- Two opcodes feed this, split by how often they change (see the matching block
+-- in data/lib/core/player.lua on the server):
+--   68 - the STATIC list: slot, break level, unlocked flag, name. Login/unlock/
+--        switch only.
+--   69 - the RAW gauge (damage absorbed), pushed on every hit taken.
+-- Each move's threshold is maxHealth * 1.10 * breakLevel, so ONE raw gauge
+-- yields a DIFFERENT percentage per move. Deriving all six here means the
+-- per-hit packet stays ~6 bytes instead of resending six names every tick.
+local LIMITBREAK_PIPS_OPCODE = 68
+local LIMITBREAK_GAUGE_OPCODE = 69
+local LIMITBREAK_PICK_OPCODE = 70
+local LIMITBREAK_AUTO_OPCODE = 71
+
+-- Auto-fire modes, matching LBS_AUTOFIRE_STORAGE / !autolimit on the server.
+-- Shown as three buttons rather than one cycling label: all three options and
+-- which one is live are visible at a glance, and setting a mode is one click
+-- instead of up to three.
+local LIMITBREAK_MODES = {
+  {mode = 0, label = 'Auto', tip = 'Auto\nFires on any worthy hit once your gauge is full.'},
+  {mode = 2, label = 'PvE',  tip = 'PvE only\nA player attacker never triggers it automatically,\nso an enemy cannot bait your Break and kite it out.'},
+  {mode = 1, label = 'Off',  tip = 'Off\nA full gauge holds until you say !limit <move>.'},
+}
+
+
+limitBreakMoves = {}       -- [slot] = {breakLevel, learned, name}
+limitBreakActiveLevel = 0
+limitBreakGauge = 0
+limitBreakAutoMode = 0
+
+function onLimitBreakPipsOpcode(protocol, opcode, buffer)
+  if not skillsWindow then return end
+  -- Accept the payload with OR without the trailing auto-fire mode field. A
+  -- client push and a server restart are separate events, so the two sides can
+  -- legitimately disagree for a while -- and a stricter match here meant the
+  -- ENTIRE pip row silently vanished when they did (seen 2026-07-26: server
+  -- restarted before the auto-fire field existed, client already expecting it).
+  -- Degrade instead: pips keep working, the mode row just stays hidden until a
+  -- server that actually sends the field comes online.
+  local activeLevel, autoMode, rest = buffer:match('^(%-?%d+),(%d+)|(.*)$')
+  if not activeLevel then
+    activeLevel, rest = buffer:match('^(%-?%d+)|(.*)$')
+    autoMode = nil
+  end
+  if not activeLevel then return end
+  limitBreakActiveLevel = tonumber(activeLevel) or 0
+  limitBreakAutoMode = autoMode and tonumber(autoMode) or nil
+
+  limitBreakMoves = {}
+  for entry in rest:gmatch('[^|]+') do
+    -- "slot,breakLevel,learned,name" -- name is last so a name containing a
+    -- comma could never shift the numeric fields.
+    local slot, breakLevel, learned, name = entry:match('^(%d+),(%d+),(%d),(.*)$')
+    if slot then
+      limitBreakMoves[tonumber(slot)] = {
+        breakLevel = tonumber(breakLevel),
+        learned = learned == '1',
+        name = name
+      }
+    end
+  end
+  rebuildLimitBreakPips()
+end
+
+function onLimitBreakGaugeOpcode(protocol, opcode, buffer)
+  if not skillsWindow then return end
+  local raw = tonumber(buffer)
+  if not raw then return end
+  limitBreakGauge = raw
+  updateLimitBreakPips()
+  setLimitBreakGaugeBar()
+end
+
+local function limitBreakPipsPanel()
+  if not skillsWindow then return nil end
+  return skillsWindow:recursiveGetChildById('lbsPips')
+end
+
+-- horizontalBox does NOT stretch its children: each keeps its own width, and a
+-- UIButton's natural width is just its text, so without this the pips bunch up
+-- at the left edge of the row and waste most of it. Size them to divide the
+-- row's ACTUAL width (which varies -- the Skills MiniWindow is resizable, and
+-- its scrollbar only takes its 13px when the content overflows) rather than
+-- hardcoding a pixel count. The integer remainder is handed out one pixel at a
+-- time to the leftmost pips so the row always fills edge to edge instead of
+-- leaving a ragged gap on the right.
+local PIP_SPACING = 1
+
+local function layoutLimitBreakPips()
+  local panel = limitBreakPipsPanel()
+  if not panel then return end
+  local children = panel:getChildren()
+  local count = #children
+  if count == 0 then return end
+  local avail = panel:getWidth() - (count - 1) * PIP_SPACING
+  if avail <= 0 then return end
+  local base = math.floor(avail / count)
+  local leftover = avail - (base * count)
+  for i, pip in ipairs(children) do
+    pip:setWidth(base + (i <= leftover and 1 or 0))
+  end
+end
+
+-- Rebuild only when the STATIC list changes (login / unlock / switch). The
+-- per-hit path just repaints, it never recreates widgets.
+function rebuildLimitBreakPips()
+  local panel = limitBreakPipsPanel()
+  if not panel then return end
+  panel:destroyChildren()
+
+  local count = 0
+  for _ in pairs(limitBreakMoves) do count = count + 1 end
+  if count == 0 then
+    panel:setVisible(false)
+    return
+  end
+
+  for slot = 1, count do
+    local move = limitBreakMoves[slot]
+    if move then
+      local pip = g_ui.createWidget('LimitBreakPip', panel)
+      pip.slot = slot
+      pip:setText(tostring(slot))
+    end
+  end
+  panel:setVisible(true)
+  rebuildLimitBreakModes()
+  layoutLimitBreakPips()
+  -- Re-fit when the window is resized. Connected once (guarded) -- reconnecting
+  -- on every rebuild would stack duplicate handlers, and rebuild runs on every
+  -- unlock and every move switch.
+  if not panel.lbsGeometryHooked then
+    panel.lbsGeometryHooked = true
+    connect(panel, {onGeometryChange = layoutLimitBreakPips})
+  end
+  updateLimitBreakPips()
+end
+
+-- Repaint every pip from the current raw gauge. Cheap: no widget creation.
+function updateLimitBreakPips()
+  local panel = limitBreakPipsPanel()
+  if not panel then return end
+  local localPlayer = g_game.getLocalPlayer()
+  if not localPlayer then return end
+  local maxHealth = localPlayer:getMaxHealth()
+
+  for _, pip in ipairs(panel:getChildren()) do
+    local move = limitBreakMoves[pip.slot]
+    if move then
+      local fill = pip:getChildById('fill')
+      local isActive = move.breakLevel == limitBreakActiveLevel
+
+      if not move.learned then
+        pip:setColor(PIP_COLOR_LOCKED_TEXT)
+        pip:setBackgroundColor(PIP_COLOR_LOCKED_BG)
+        pip:setBorderColor(PIP_COLOR_LOCKED_BORDER)
+        if fill then fill:setPercent(0) end
+        pip:setTooltip(move.name .. '\nNot unlocked yet')
+      else
+        local threshold = maxHealth * LIMITBREAK_GAUGE_COST_PER_LEVEL * move.breakLevel
+        local percent = 0
+        if threshold > 0 then
+          percent = math.min(100, math.floor(limitBreakGauge * 100 / threshold))
+        end
+        local isReady = percent >= 100
+
+        pip:setColor(isReady and PIP_COLOR_READY_TEXT or PIP_COLOR_CHARGE_TEXT)
+        pip:setBackgroundColor(isReady and PIP_COLOR_READY_BG or PIP_COLOR_CHARGE_BG)
+        pip:setBorderColor(isActive and PIP_COLOR_READY_BORDER or PIP_COLOR_IDLE_BORDER)
+        if fill then
+          fill:setBackgroundColor(isReady and PIP_COLOR_READY_TEXT or PIP_FILL_COLOR)
+          fill:setPercent(percent)
+        end
+
+        local tip = move.name
+        if isReady then
+          tip = tip .. '\nReady - fires on your next real hit'
+        else
+          local remaining = math.max(0, math.ceil(threshold - limitBreakGauge))
+          tip = tip .. '\n' .. percent .. '% - ' .. remaining .. ' more damage'
+        end
+        if isActive then tip = tip .. '\n(active)' end
+        pip:setTooltip(tip)
+      end
+    end
+  end
+end
+
+-- The Auto / PvE / Off row. Built once alongside the pips (the mode arrives on
+-- the same packet), then only repainted when the selection changes.
+local function limitBreakModePanel()
+  if not skillsWindow then return nil end
+  return skillsWindow:recursiveGetChildById('lbsAuto')
+end
+
+function rebuildLimitBreakModes()
+  local panel = limitBreakModePanel()
+  if not panel then return end
+  -- nil = this server doesn't send the auto-fire field (see onLimitBreakPipsOpcode).
+  if limitBreakAutoMode == nil then
+    panel:destroyChildren()
+    panel:setVisible(false)
+    return
+  end
+  if #panel:getChildren() == 0 then
+    for _, entry in ipairs(LIMITBREAK_MODES) do
+      local btn = g_ui.createWidget('LimitBreakModePip', panel)
+      btn.mode = entry.mode
+      btn:setText(entry.label)
+      btn:setTooltip(entry.tip)
+    end
+    if not panel.lbsGeometryHooked then
+      panel.lbsGeometryHooked = true
+      connect(panel, {onGeometryChange = layoutLimitBreakModes})
+    end
+  end
+  panel:setVisible(true)
+  layoutLimitBreakModes()
+  updateLimitBreakModes()
+end
+
+function layoutLimitBreakModes()
+  local panel = limitBreakModePanel()
+  if not panel then return end
+  local children = panel:getChildren()
+  local count = #children
+  if count == 0 then return end
+  local avail = panel:getWidth() - (count - 1) * PIP_SPACING
+  if avail <= 0 then return end
+  local base = math.floor(avail / count)
+  local leftover = avail - (base * count)
+  for i, btn in ipairs(children) do
+    btn:setWidth(base + (i <= leftover and 1 or 0))
+  end
+end
+
+function updateLimitBreakModes()
+  local panel = limitBreakModePanel()
+  if not panel then return end
+  for _, btn in ipairs(panel:getChildren()) do
+    local selected = btn.mode == limitBreakAutoMode
+    btn:setColor(selected and PIP_COLOR_READY_TEXT or PIP_COLOR_CHARGE_TEXT)
+    btn:setBackgroundColor(selected and PIP_COLOR_READY_BG or PIP_COLOR_CHARGE_BG)
+    btn:setBorderColor(selected and PIP_COLOR_READY_BORDER or PIP_COLOR_IDLE_BORDER)
+  end
+end
+
+function onLimitBreakModeClick(btn)
+  if btn.mode == limitBreakAutoMode then return end
+  local protocol = g_game.getProtocolGame()
+  if not protocol then return end
+  -- Send the DESIRED mode, not a "cycle" request: the server whitelists it
+  -- against {0,1,2}, and a dropped packet can't desync a cycle position.
+  protocol:sendExtendedOpcode(LIMITBREAK_AUTO_OPCODE, tostring(btn.mode))
+end
+
+function onLimitBreakPipClick(pip)
+  local move = limitBreakMoves[pip.slot]
+  if not move or not move.learned then return end
+  if move.breakLevel == limitBreakActiveLevel then return end
+  local protocol = g_game.getProtocolGame()
+  if not protocol then return end
+  -- Send the BREAK LEVEL, not the slot: the server resolves it against its own
+  -- move table and re-runs every check !level runs. Nothing here is trusted.
+  protocol:sendExtendedOpcode(LIMITBREAK_PICK_OPCODE, tostring(move.breakLevel))
+end
+
 function updateLimitBreakBar()
-  setSkillValue('limitBreak', limitBreakSecsLeft .. 's')
+  -- Paints the 'Break time' row (limitBreakTimer), NOT the anger gauge. These
+  -- were one row until 2026-07-26; splitting them means an active Break no
+  -- longer hides the gauge that is still filling underneath it.
+  setSkillValue('limitBreakTimer', limitBreakSecsLeft .. 's')
   local percentLeft = math.floor(limitBreakSecsLeft * 100 / LIMITBREAK_DURATION_SECS)
-  setSkillPercent('limitBreak', percentLeft,
+  setSkillColor('limitBreakTimer', limitBreakBarColor(percentLeft))
+  setSkillPercent('limitBreakTimer', percentLeft,
     tr('Limit Break active: %s seconds left', limitBreakSecsLeft), limitBreakBarColor(percentLeft))
 end
 
@@ -246,6 +607,8 @@ function init()
   pcall(ProtocolGame.registerExtendedOpcode, SESSIONSTATS_OPCODE, onSessionStatsOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_OPCODE, onLimitBreakOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_MOVES_OPCODE, onLimitBreakMovesOpcode)
+  pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_PIPS_OPCODE, onLimitBreakPipsOpcode)
+  pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_GAUGE_OPCODE, onLimitBreakGaugeOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, REALEXP_OPCODE, onRealExpOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, FOOD_OPCODE, onFoodOpcode)
 
@@ -307,6 +670,8 @@ function terminate()
   pcall(ProtocolGame.unregisterExtendedOpcode, SESSIONSTATS_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_MOVES_OPCODE)
+  pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_PIPS_OPCODE)
+  pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_GAUGE_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, REALEXP_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, FOOD_OPCODE)
 
@@ -356,6 +721,15 @@ function setSkillValue(id, value)
   local skill = skillsWindow:recursiveGetChildById(id)
   local widget = skill:getChildById('value')
   widget:setText(value)
+end
+
+-- Companion to setSkillColor, which only reaches the 'value' child. Needs the
+-- id added to SkillNameLabel in skills.otui.
+function setSkillNameColor(id, color)
+  local skill = skillsWindow:recursiveGetChildById(id)
+  if not skill then return end
+  local widget = skill:getChildById('name')
+  if widget then widget:setColor(color) end
 end
 
 function setSkillColor(id, value)
@@ -485,8 +859,19 @@ function refresh()
   -- character doesn't leak the previous character's visible row.
   limitBreakActive = false
   toggleSkill('limitBreak', false)
-  toggleSkill('lbsMove', false)
+  toggleSkill('limitBreakTimer', false)
   toggleSkill('lbsNext', false)
+  limitBreakMoves = {}
+  limitBreakActiveLevel = 0
+  limitBreakGauge = 0
+  limitBreakAutoMode = nil
+  for _, id in ipairs({'lbsPips', 'lbsAuto'}) do
+    local panel = skillsWindow and skillsWindow:recursiveGetChildById(id)
+    if panel then
+      panel:destroyChildren()
+      panel:setVisible(false)
+    end
+  end
   toggleSkill('lbsSeparatorBottom', false)
 
   local hasAdditionalSkills = g_game.getFeature(GameAdditionalSkills)

@@ -8,7 +8,59 @@ SkillButton < UIButton
 SmallSkillButton < SkillButton
   height: 14
 
+// One clickable Limit Break move slot. Deliberately NOT based on SkillButton:
+// that carries &onClick: onSkillButtonClick, which would fire the row-toggle
+// behaviour on top of our own handler. The digit shown is the move's SLOT
+// (1..6), never its break level -- 1/3/5/7/13/25 are non-sequential internals
+// with no meaning to a player, which is why !level moved to move names.
+LimitBreakPip < UIButton
+  height: 26
+  font: verdana-11px-monochrome
+  text-align: center
+  text-offset: 0 -4
+  border-width: 1
+  &onClick: modules.game_skills.onLimitBreakPipClick
+
+  ProgressBar
+    id: fill
+    height: 3
+    phantom: true
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    margin-left: 2
+    margin-right: 2
+    margin-bottom: 2
+
+// A framed name+value row, so the 'Next' line reads as part of the Limit Break
+// control block rather than loose text under it. Based on UIButton and NOT on
+// SkillButton: SkillButton's &onClick (onSkillButtonClick) only toggles a
+// 'percent' child, which this row does not have -- so inheriting it would give
+// a row that LOOKS pressable and does nothing. It gets a real action instead.
+LimitBreakInfoButton < UIButton
+  height: 17
+  font: verdana-11px-monochrome
+  border-width: 1
+  padding-left: 3
+  padding-right: 3
+  &onClick: modules.game_skills.onLimitBreakNextClick
+
+// Auto-fire mode selector (Auto / PvE / Off), mirroring !autolimit. Same visual
+// vocabulary as LimitBreakPip so the whole Limit Break block reads as one
+// control, but slimmer and with no fill bar -- there is nothing to fill.
+LimitBreakModePip < UIButton
+  height: 16
+  font: verdana-11px-monochrome
+  text-align: center
+  border-width: 1
+  &onClick: modules.game_skills.onLimitBreakModeClick
+
+// id added 2026-07-26 so the Limit Break rows can tint their NAME label, not
+// just their value (setSkillNameColor in skills.lua). Harmless for every other
+// row -- they simply never look it up. Checked: nothing else in modules/
+// resolves a 'name' child on a skill row.
 SkillNameLabel < GameLabel
+  id: name
   font: verdana-11px-monochrome
   anchors.left: parent.left
   anchors.top: parent.top
@@ -75,16 +127,50 @@ MiniWindow
       SkillPercentPanel
         background-color: #FFCC00
 
+    // Separate bar for the 90s countdown while a Break is running. Previously
+    // the single bar above did both jobs, so an active Break HID the anger
+    // gauge -- and the gauge keeps filling during those 90s (statchange.lua
+    // still credits damage taken, it just holds the charge), so the next
+    // charge building was invisible. Shown only while a Break is active.
     SkillButton
-      id: lbsMove
-      height: 15
+      id: limitBreakTimer
       SkillNameLabel
-        !text: tr('Move')
+        !text: tr('Break time')
       SkillValueLabel
+      SkillPercentPanel
+        background-color: #FFCC00
 
-    SkillButton
+    // Vertical rhythm of the Limit Break block, in reading order:
+    //   [gauge bar] [break-time bar]   <- the two bars, tight together
+    //   (6px)
+    //   [move pips]                    <- what you pick
+    //   (4px)
+    //   [auto/pve/off]                 <- when it fires
+    //   (6px)
+    //   [Next]                         <- unlock progress
+    // The gap ABOVE the pips deliberately lives on lbsPips' own margin-top, not
+    // on the break-time row's margin-bottom: that row is hidden whenever no
+    // Break is running, and a hidden widget contributes neither height nor
+    // margin, so a gap parked there would silently collapse most of the time.
+    Panel
+      id: lbsPips
+      height: 26
+      margin-top: 6
+      margin-bottom: 4
+      layout:
+        type: horizontalBox
+        spacing: 1
+
+    Panel
+      id: lbsAuto
+      height: 16
+      margin-bottom: 6
+      layout:
+        type: horizontalBox
+        spacing: 1
+
+    LimitBreakInfoButton
       id: lbsNext
-      height: 15
       SkillNameLabel
         !text: tr('Next')
       SkillValueLabel
