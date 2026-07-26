@@ -1,0 +1,43 @@
+EnterGameWindow < StaticMainWindow
+  !text: ''
+  size: 504 554
+  image-source: /images/theot/login-panel
+  image-border: 0
+  image-smooth: true
+  padding: 0
+
+TheotInput < UITextEdit
+  font: verdana-11px-antialised
+  color: #F2E8C8
+  selection-color: #1C1206
+  selection-background-color: #C9A24A
+  change-cursor-image: true
+  cursor: pointer
+
+TheotPassword < TheotInput
+  text-hidden: true
+
+TheotLoginBtn < UIButton
+  change-cursor-image: true
+  cursor: pointer
+
+// Gold pill for login dialog boxes (error / connecting). Applied via Lua only to
+// front-door message boxes; in-game MessageBox buttons stay stock.
+LoginDialogButton < UIButton
+  font: verdana-11px-antialised
+  color: #2a1a00
+  size: 74 26
+  text-offset: 0 1
+  padding: 4 10 4 10
+  image-source: /images/ui/dialog-button-sheet
+  image-clip: 0 0 120 32
+  image-border: 16
+  change-cursor-image: true
+  cursor: pointer
+  $hover !disabled:
+    image-clip: 0 32 120 32
+  $pressed:
+    image-clip: 0 64 120 32
+    text-offset: 1 1
+  $disabled:
+    opacity: 0.8

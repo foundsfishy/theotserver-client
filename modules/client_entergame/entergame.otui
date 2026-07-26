@@ -1,0 +1,82 @@
+EnterGameWindow
+  id: enterGame
+  @onEnter: EnterGame.doLogin()
+
+  TheotInput
+    id: accountNameTextEdit
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-left: 55
+    margin-top: 310
+    width: 394
+    height: 19
+
+  TheotPassword
+    id: accountPasswordTextEdit
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-left: 55
+    margin-top: 371
+    width: 394
+    height: 19
+
+  CheckBox
+    id: rememberPasswordBox
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-left: 43
+    margin-top: 408
+    width: 17
+    height: 17
+    image-color: #ffffff00
+    !text: ''
+
+  TheotLoginBtn
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-left: 43
+    margin-top: 438
+    width: 418
+    height: 55
+    @onClick: EnterGame.doLogin()
+
+  TheotLoginBtn
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-left: 94
+    margin-top: 499
+    width: 154
+    height: 31
+    @onClick: g_platform.openUrl('https://theotserver.com/?page=createaccount')
+
+  TheotLoginBtn
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-left: 271
+    margin-top: 499
+    width: 149
+    height: 31
+    @onClick: g_platform.openUrl('https://theotserver.com/?page=recover')
+
+  Panel
+    id: serverSelectorPanel
+    visible: false
+    height: 0
+    on: false
+    ComboBox
+      id: serverSelector
+
+  Panel
+    id: customServerSelectorPanel
+    visible: false
+    height: 0
+    on: false
+    TextEdit
+      id: serverHostTextEdit
+    ComboBox
+      id: clientVersionSelector
+
+  TextEdit
+    id: accountTokenTextEdit
+    visible: false
+    height: 0

@@ -1,0 +1,236 @@
+// Scoped smooth login-style button (does NOT touch the global Button = in-game stays stock)
+CharlistButton < UIButton
+  font: medievalsharp-15px
+  color: #2a1a00
+  size: 72 32
+  text-offset: 0 1
+  padding: 4 8 4 8
+  image-source: /images/ui/dialog-button-sheet
+  image-clip: 0 0 120 32
+  image-border: 16
+  change-cursor-image: true
+  cursor: pointer
+  opacity: 1.0
+
+  $hover !disabled:
+    image-clip: 0 32 120 32
+
+  $pressed:
+    image-clip: 0 64 120 32
+    text-offset: 1 1
+
+  $disabled:
+    opacity: 0.7
+    change-cursor-image: false
+
+// Scoped gold scrollbar (charlist only — global scrollbar stays stock for in-game)
+CharlistScrollBarSlider < UIButton
+  id: sliderButton
+  anchors.centerIn: parent
+  size: 13 17
+  image-source: /images/ui/charlist-scrollbar
+  image-clip: 0 26 13 13
+  image-border: 2
+  $hover:
+    image-clip: 13 26 13 13
+  $pressed:
+    image-clip: 26 26 13 13
+
+CharlistScrollBar < UIScrollBar
+  orientation: vertical
+  width: 13
+  image-source: /images/ui/charlist-scrollbar
+  image-clip: 39 0 13 65
+  image-border: 1
+  pixels-scroll: true
+
+  UIButton
+    id: decrementButton
+    anchors.top: parent.top
+    anchors.left: parent.left
+    image-source: /images/ui/charlist-scrollbar
+    image-clip: 0 0 13 13
+    size: 13 13
+    $hover:
+      image-clip: 13 0 13 13
+    $pressed:
+      image-clip: 26 0 13 13
+
+  UIButton
+    id: incrementButton
+    anchors.bottom: parent.bottom
+    anchors.right: parent.right
+    size: 13 13
+    image-source: /images/ui/charlist-scrollbar
+    image-clip: 0 13 13 13
+    $hover:
+      image-clip: 13 13 13 13
+    $pressed:
+      image-clip: 26 13 13 13
+
+  CharlistScrollBarSlider
+
+CharacterWidget < UIWidget
+  height: 23
+  background-color: alpha
+  &updateOnStates: |
+    function(self)
+      local children = self:getChildren()
+      for i=1,#children do
+        children[i]:setOn(self:isFocused())
+      end
+    end
+  @onFocusChange: self:updateOnStates()
+  @onSetup: self:updateOnStates()
+
+  $focus:
+    background-color: #b8860b3a
+
+  Label
+    id: name
+    color: #e8d8b0
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+    anchors.right: parent.horizontalCenter
+    text-align: center
+    text-auto-resize: false
+    font: medievalsharp-15px
+    background-color: alpha
+
+    $on:
+      color: #ffffff
+
+  Label
+    id: worldName
+    color: #c0a468
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    anchors.left: parent.horizontalCenter
+    anchors.right: parent.right
+    text-align: center
+    text-auto-resize: false
+    font: medievalsharp-15px
+    background-color: alpha
+    &baseText: '(%s)'
+
+    $on:
+      color: #ffffff
+
+// Baked login-style panel, scaled to 384x468 (20% larger than the prior 320x390).
+// Title, OtS coin and "Account Status:" are painted in; only live widgets sit
+// on top, at the manifest rects scaled by 1.2.
+StaticMainWindow
+  id: charactersWindow
+  visible: false
+  size: 384 468
+  image-source: /images/ui/charlist-panel
+  image-border: 0
+  image-border-top: 0
+  padding: 0
+  @onEnter: CharacterList.doLogin()
+  @onEscape: CharacterList.hide(true)
+  @onSetup: |
+    g_keyboard.bindKeyPress('Up', function() self:getChildById('characters'):focusPreviousChild(KeyboardFocusReason) end, self)
+    g_keyboard.bindKeyPress('Down', function() self:getChildById('characters'):focusNextChild(KeyboardFocusReason) end, self)
+
+  Label
+    id: hdrName
+    !text: tr('Character Name')
+    color: #cda85f
+    font: medievalsharp-15px
+    text-align: center
+    text-auto-resize: false
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-top: 135
+    margin-left: 44
+    width: 155
+    height: 22
+
+  Label
+    id: hdrServer
+    !text: tr('Server')
+    color: #cda85f
+    font: medievalsharp-15px
+    text-align: center
+    text-auto-resize: false
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-top: 135
+    margin-left: 186
+    width: 154
+    height: 22
+
+  TextList
+    id: characters
+    background-color: alpha
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-top: 157
+    margin-left: 31
+    width: 309
+    height: 204
+    padding: 2
+    focusable: false
+    vertical-scrollbar: characterListScrollBar
+    auto-focus: first
+
+  CharlistScrollBar
+    id: characterListScrollBar
+    anchors.top: characters.top
+    anchors.bottom: characters.bottom
+    anchors.left: characters.right
+    step: 23
+    pixels-scroll: true
+
+  Label
+    id: accountStatusLabel
+    !text: tr('Free Account')
+    color: #cdaa66
+    font: medievalsharp-15px
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-top: 369
+    margin-left: 170
+    padding: 1 0 1 0
+    text-auto-resize: true
+    text-align: center
+    // Free = plain text; Premium gets the gold pill (set in characterlist.lua)
+
+  CharlistButton
+    id: autoReconnect
+    width: 178
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-top: 403
+    margin-left: 22
+
+    // green/red already signals state, so the label stays short to fit Cinzel
+    $!on:
+      image-source: /images/ui/dialog-button-sheet-off
+      !text: tr('Auto reconnect')
+
+    $on:
+      image-source: /images/ui/dialog-button-sheet-on
+      !text: tr('Auto reconnect')
+
+  CharlistButton
+    id: buttonCancel
+    !text: tr('Cancel')
+    width: 90
+    anchors.top: parent.top
+    anchors.right: parent.right
+    margin-top: 403
+    margin-right: 22
+    @onClick: CharacterList.hide(true)
+
+  CharlistButton
+    id: buttonOk
+    !text: tr('Ok')
+    width: 52
+    anchors.top: parent.top
+    anchors.right: buttonCancel.left
+    margin-top: 403
+    margin-right: 7
+    @onClick: CharacterList.doLogin()

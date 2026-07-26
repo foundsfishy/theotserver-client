@@ -1,0 +1,8 @@
+Font
+  name: medievalsharp-15px
+  texture: medievalsharp-15px
+  height: 17
+  glyph-size: 22 22
+  y-offset: -2
+  space-width: 5
+  spacing: 0 -3

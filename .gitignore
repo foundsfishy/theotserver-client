@@ -1,0 +1,36 @@
+# Local-only server override (never commit a localhost address). See host_local.example.lua
+host_local.lua
+
+# Iterative working backups from the rebrand session (regenerable; were ~1.7 GB)
+otcv8.zip.*
+*.theotbak
+_skin_backup/
+
+# Runtime logs / crash output
+*.log
+
+# Player-owned runtime state — NEVER track or ship. These are written per-player
+# on their own machine; committing/shipping one would overwrite everyone's on the
+# next client update.
+*.otmm          # explored minimap + automap marks (players keep their maps)
+config.otml     # client settings (incl. the account/password saved by "remember")
+
+# OS cruft
+Thumbs.db
+.DS_Store
+
+# Design-handoff working files (kept locally; brand source lives in the main project _assets)
+_design_handoff/
+
+# Dev preview renders
+*_preview.png
+dlgwin_view.png
+
+# Generated boot archive (built from the loose files; regenerated at release time)
+data.zip
+
+# Personal dev/test scratch - never belongs in the client repo (bot macro configs,
+# local multi-client test launchers referencing dev-only accounts, etc.)
+roam_bot/
+launch_spawn_test_clients.ps1
+*_test_clients.ps1

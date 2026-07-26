@@ -1,0 +1,8 @@
+Font
+  name: cinzel-13px
+  texture: cinzel-13px
+  height: 17
+  glyph-size: 22 22
+  y-offset: -2
+  space-width: 5
+  spacing: 0 -3

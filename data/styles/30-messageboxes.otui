@@ -1,0 +1,25 @@
+MessageBoxLabel < Label
+  id: messageBoxLabel
+  anchors.horizontalCenter: parent.horizontalCenter
+  anchors.top: parent.top
+  text-wrap: true
+  text-auto-resize: true
+
+MessageBoxButtonHolder < UIWidget
+  id: buttonHolder
+  margin-top: 10
+  anchors.bottom: parent.bottom
+
+// STOCK button - in-game message boxes stay grey/untouched.
+MessageBoxButton < Button
+  margin-left: 10
+  width: 80
+
+// Gold frame applied ONLY to login/front-door boxes (via brandLoginBox in the
+// client_entergame module). Inherits MainWindow layout so re-styling an existing
+// box never shifts its contents - only the frame image + title color change.
+MessageBoxWindow < MainWindow
+  image-source: /images/ui/dialog-window
+  image-border: 14
+  image-border-top: 14
+  color: #F2E8C8

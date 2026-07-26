@@ -1,0 +1,9 @@
+Module
+  name: game_lootchannel
+  description: Routes monster loot messages into a dedicated Loot channel tab
+  author: TheOtServer
+  scripts: [ lootchannel ]
+  autoload: true
+  sandboxed: true
+  @onLoad: init()
+  @onUnload: terminate()

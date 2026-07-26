@@ -1,0 +1,52 @@
+name: Build & publish client
+
+# No-brainer release: every push to main rebuilds the player zip and updates the single
+# rolling "latest" GitHub Release. The website's download link
+# (/releases/latest/download/TheOtServer-Client-Windows.zip) always serves it - so a push
+# IS the release; nothing on the Releases page or the website ever needs touching.
+#
+# Note: this ships whatever is committed. The loose modules/ + data/ + init.lua ARE the source
+# of truth; build-release.py regenerates data.zip WHOLESALE from them each run (the old per-file
+# otcv8.zip surgery is gone - otcv8.zip no longer exists). Just edit the loose files and push.
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: client-release
+  cancel-in-progress: true
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Build the player zip
+        run: |
+          python build-release.py
+          # build-release.py writes one level up; bring it into the workspace for upload
+          mv ../TheOtServer-Client-Windows.zip ./TheOtServer-Client-Windows.zip
+          ls -lh TheOtServer-Client-Windows.zip
+
+      - name: Publish to the rolling "latest" release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Client
+          body: >
+            Auto-built from the latest push to main. The website download button serves this
+            asset via /releases/latest/download/TheOtServer-Client-Windows.zip.
+          files: TheOtServer-Client-Windows.zip
+          make_latest: true
