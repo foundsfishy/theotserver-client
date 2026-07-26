@@ -1,5 +1,6 @@
 -- Training bot: repeatedly casts an attack spell to train magic level, and
--- auto-eats food so you don't need to babysit hunger during a long session.
+-- eats the moment you go Hungry so you don't need to babysit food during a
+-- long session.
 -- Off by default - pick "Training" from the bot config list and flip it on
 -- whenever you actually want it running.
 --
@@ -29,6 +30,15 @@ local ATTACK_SPELL = "exori" -- CHANGE to your own attack spell's words
 local ATTACK_INTERVAL_MS = 2000 -- matches typical spell exhaust; raise this if
                                  -- your spell has a longer cooldown
 
+-- How often to re-check that you're still actually attacking something. This is
+-- deliberately much faster than the spell timer: if the attack drops for any
+-- reason (a relog after a server restart, the monster dying, you clicking
+-- something else) it gets picked back up within half a second instead of
+-- waiting on the spell's cooldown.
+local TARGET_CHECK_MS = 500
+local REATTACK_RETRY_MS = 1000 -- don't re-send the attack faster than this while
+                                -- it isn't sticking (out of range, etc.)
+
 local UTILITY_SPELL = "utevo gran lux" -- open to every vocation on this server;
                                         -- leave as "" to disable
 local UTILITY_INTERVAL_MS = 1100 -- Great Light's real cooldown is 1000ms
@@ -42,12 +52,20 @@ local UTILITY_INTERVAL_MS = 1100 -- Great Light's real cooldown is 1000ms
 local ATTACK_MANA_COST = 0 -- 0 = auto-detect from the spell's words
 local UTILITY_MANA_COST = 0 -- 0 = auto-detect from the spell's words
 
--- Eat once your remaining regeneration drops below this many seconds. Higher =
--- eats sooner and keeps you topped up; lower = squeezes more out of each item.
--- Eating while already full is refused by the server anyway, so raising this
--- wastes nothing - it just means you top up earlier.
-local EAT_BELOW_SECONDS = 400
-local EAT_CHECK_MS = 2000 -- how often to check hunger; the check is cheap
+-- Eat once your remaining regeneration drops to this many seconds.
+--
+-- 0 means "only when you are actually Hungry" - the exact same moment the
+-- Hungry icon appears next to your health, since that icon also lights up at 0.
+-- That is the least wasteful setting: no food is spent, and no packets are sent
+-- to the server, while you still have regeneration left to burn. Raise it (e.g.
+-- 400) if you would rather top up early and never sit at zero regeneration.
+local EAT_BELOW_SECONDS = 0
+local EAT_CHECK_MS = 2000 -- how often to check hunger; costs nothing while full
+
+-- If you are hungry but carrying no food at all, stop hammering the server with
+-- open-bag requests every couple of seconds - wait this long before looking
+-- again. Finding food, or eating, resets this immediately.
+local NO_FOOD_BACKOFF_MS = 30000
 
 -- Every edible item in the game (69 of them), as CLIENT item ids: meats, fish,
 -- all the fruits, every mushroom, breads, cheeses, cakes, sweets and veggies.
@@ -99,14 +117,30 @@ local function hasManaFor(words, configuredCost)
   return player:getMana() >= cost
 end
 
-macro(ATTACK_INTERVAL_MS, "Train - Attack", function()
+-- Runs on the fast TARGET_CHECK_MS tick so a dropped attack is re-established
+-- almost immediately - after a relog following a server restart, the client
+-- comes back with no target at all, and this notices and re-attacks rather than
+-- standing there idle. The spell itself is still throttled to its own cooldown
+-- below, so checking often costs nothing extra in spell spam.
+local lastCast = 0
+local lastAttackSent = 0
+
+macro(TARGET_CHECK_MS, "Train - Attack", function()
   local target = findClosestMonster()
   if not target then return end
-  -- Keep the target even when out of mana, so melee damage carries on.
+
+  -- Re-attack whenever the game isn't attacking the monster we picked. Keeps
+  -- the target even when out of mana, so melee damage carries on regardless.
   if g_game.getAttackingCreature() ~= target then
-    g_game.attack(target)
+    if now - lastAttackSent >= REATTACK_RETRY_MS then
+      lastAttackSent = now
+      g_game.attack(target)
+    end
   end
+
+  if now - lastCast < ATTACK_INTERVAL_MS then return end
   if not hasManaFor(ATTACK_SPELL, ATTACK_MANA_COST) then return end
+  lastCast = now
   say(ATTACK_SPELL)
 end)
 
@@ -172,13 +206,24 @@ end
 -- (see game_bot/functions/player.lua). It reads math.huge until the first
 -- packet lands, so a fresh login never looks "starving" and eats needlessly.
 --
--- Food that's already in an open bag gets eaten straight away. Only if none is
--- visible do we bother opening bags - and g_game.open() is a request to the
--- server, not instant, so that retry has to wait a moment for the contents to
--- actually arrive rather than searching in the same tick.
+-- Nothing below sends a single packet until you are genuinely hungry. Then food
+-- already sitting in an open bag is eaten straight away; only if none is visible
+-- do we open bags at all - and g_game.open() is a request to the server, not
+-- instant, so that retry waits a moment for the contents to actually arrive
+-- rather than searching in the same tick. If that still turns up nothing, we
+-- back off entirely instead of re-opening bags every couple of seconds.
+local nextFoodScan = 0
+
 macro(EAT_CHECK_MS, "Train - Eat", function()
   if getRealRegenerationTime() > EAT_BELOW_SECONDS then return end
+  if now < nextFoodScan then return end
+
   if eatFromOpenContainers() then return end
+
   openAllContainers()
-  schedule(300, eatFromOpenContainers)
+  schedule(300, function()
+    if not eatFromOpenContainers() then
+      nextFoodScan = now + NO_FOOD_BACKOFF_MS -- carrying no food; stop retrying
+    end
+  end)
 end)
