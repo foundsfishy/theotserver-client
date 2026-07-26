@@ -51,6 +51,7 @@ local suppressAutoLootSignal = false
 soulLabel = nil
 capLabel = nil
 conditionPanel = nil
+hungryIcon = nil
 
 function init()
   connect(LocalPlayer, {
@@ -350,6 +351,7 @@ function offline()
   end
 
   conditionPanel:destroyChildren()
+  hungryIcon = nil
 
   local player = g_game.getLocalPlayer()
   if player then
@@ -489,6 +491,19 @@ function loadIcon(bitChanged)
   icon:setImageSource(Icons[bitChanged].path)
   icon:setTooltip(Icons[bitChanged].tooltip)
   return icon
+end
+
+-- Driven by game_skills.lua's FOOD_OPCODE data (see Player:sendFood on the
+-- server) since the native Hungry icon bit (PlayerStates.Hungry) is never set
+-- by this server's engine -- reuses the same Icons/loadIcon above, just
+-- toggled from a different source.
+function setHungryIcon(active)
+  if active and not hungryIcon then
+    hungryIcon = loadIcon(PlayerStates.Hungry)
+  elseif not active and hungryIcon then
+    hungryIcon:destroy()
+    hungryIcon = nil
+  end
 end
 
 function onSoulChange(localPlayer, soul)

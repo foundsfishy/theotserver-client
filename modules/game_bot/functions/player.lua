@@ -26,6 +26,12 @@ context.mlevel = function() return context.player:getMagicLevel() end
 
 context.soul = function() return context.player:getSoul() end
 context.stamina = function() return context.player:getStamina() end
+-- context.player:getRegenerationTime() is the native OTClient getter, but the
+-- native 8.60 stats packet never carries that field (server is hardcoded to
+-- protocol 860 with no version negotiation), so it always reads stale/default
+-- data. game_skills/skills.lua receives the real value over a custom opcode
+-- instead (see Player:sendFood on the server) -- this is the bridge to it.
+context.getRealRegenerationTime = function() return modules.game_skills.getRealRegenerationTime() end
 context.voc = function() return context.player:getVocation() end
 context.vocation = function() return context.player:getVocation() end
 

@@ -134,15 +134,16 @@ local function eatFromOpenContainers()
   end
 end
 
--- The 8.60 protocol doesn't report your food/regeneration state to the client,
--- so there's no reliable "am I hungry yet" signal to wait for. This just tries
--- to eat on a slow timer instead - the server refuses the use and keeps the
--- item once you're already full, so nothing gets wasted either way.
+-- getRealRegenerationTime() is the real hunger signal, pushed by the server
+-- over a custom opcode since the native 8.60 stats packet never carries it
+-- (see game_bot/functions/player.lua). Only bothers opening bags/searching
+-- once actually needed instead of blindly on a timer.
 --
 -- g_game.open() is a request to the server, not instant - a bag's contents
 -- only arrive after a round trip, so the food search has to happen a moment
 -- later rather than in the same tick that opens the bag.
-macro(10000, "Train - Eat", function()
+macro(2000, "Train - Eat", function()
+  if getRealRegenerationTime() > 400 then return end
   openAllContainers()
   schedule(300, eatFromOpenContainers)
 end)

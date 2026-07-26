@@ -18,6 +18,8 @@ Icons[PlayerStates.Bleeding] = { tooltip = tr('You are bleeding'), path = '/imag
 Icons[PlayerStates.Hungry] = { tooltip = tr('You are hungry'), path = '/images/game/states/hungry', id = 'condition_hungry' }
 
 healthInfoWindow = nil
+hungryIcon = nil
+conditionPanel = nil
 healthBar = nil
 manaBar = nil
 experienceBar = nil
@@ -62,6 +64,7 @@ function init()
   experienceBar = healthInfoWindow:recursiveGetChildById('experienceBar')
   soulLabel = healthInfoWindow:recursiveGetChildById('soulLabel')
   capLabel = healthInfoWindow:recursiveGetChildById('capLabel')
+  conditionPanel = healthInfoWindow:recursiveGetChildById('conditionPanel')
 
   overlay = g_ui.createWidget('HealthOverlay', modules.game_interface.getMapPanel())  
   healthCircleFront = overlay:getChildById('healthCircleFront')
@@ -130,19 +133,17 @@ function toggle()
 end
 
 function toggleIcon(bitChanged)
-  local content = healthInfoWindow:recursiveGetChildById('conditionPanel')
-
-  local icon = content:getChildById(Icons[bitChanged].id)
+  local icon = conditionPanel:getChildById(Icons[bitChanged].id)
   if icon then
     icon:destroy()
   else
     icon = loadIcon(bitChanged)
-    icon:setParent(content)
+    icon:setParent(conditionPanel)
   end
 end
 
 function loadIcon(bitChanged)
-  local icon = g_ui.createWidget('ConditionWidget', content)
+  local icon = g_ui.createWidget('ConditionWidget', conditionPanel)
   icon:setId(Icons[bitChanged].id)
   icon:setImageSource(Icons[bitChanged].path)
   icon:setTooltip(Icons[bitChanged].tooltip)
@@ -150,7 +151,21 @@ function loadIcon(bitChanged)
 end
 
 function offline()
-  healthInfoWindow:recursiveGetChildById('conditionPanel'):destroyChildren()
+  conditionPanel:destroyChildren()
+  hungryIcon = nil
+end
+
+-- Driven by game_skills.lua's FOOD_OPCODE data (see Player:sendFood on the
+-- server) since the native Hungry icon bit (PlayerStates.Hungry) is never set
+-- by this server's engine -- reuses the same Icons/loadIcon this file already
+-- has for every other condition icon, just toggled from a different source.
+function setHungryIcon(active)
+  if active and not hungryIcon then
+    hungryIcon = loadIcon(PlayerStates.Hungry)
+  elseif not active and hungryIcon then
+    hungryIcon:destroy()
+    hungryIcon = nil
+  end
 end
 
 -- hooked events

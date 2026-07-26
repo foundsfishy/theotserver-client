@@ -46,6 +46,59 @@ local REALEXP_OPCODE = 65
 local EXP_CLAMP_THRESHOLD = 2147483647 -- 0x7FFFFFFF, matches protocolgame.cpp's std::min clamp
 local realExperience = nil
 
+-- Server pushes remaining regeneration/food ticks in seconds (see
+-- data/lib/core/player.lua -> Player:sendFood on the server). The native 8.60
+-- stats packet never carries this field at all -- it's gated behind
+-- GamePlayerRegenerationTime, which requires client version >= 910 and so is
+-- never enabled here -- which is why localPlayer:getRegenerationTime() always
+-- reads a stale/default value.
+--
+-- getRealRegenerationTime() is the non-local accessor other modules (the bot's
+-- auto-eat scripts, via modules.game_skills.getRealRegenerationTime()) read
+-- instead of the broken native getter. math.huge until the first packet
+-- lands (~1s after login) so a bot never mistakes "no data yet" for "hungry".
+--
+-- Display is a "Hungry" condition icon (same id/image this client already
+-- ships for the native Hungry state, PlayerStates.Hungry -- see
+-- game_healthinfo/healthinfo.lua and game_inventory/inventory.lua -- but the
+-- server engine has no ICON_HUNGRY bit at all (src/const.h), so the native
+-- path never fires it). Shown at 0 ticks left, hidden otherwise (static, no
+-- blink), driven from here since this is the only place the real value is known.
+local FOOD_OPCODE = 67
+local realRegenerationTime = nil
+local foodTickEvent = nil
+
+function getRealRegenerationTime()
+  return realRegenerationTime or math.huge
+end
+
+function updateHungryIcon()
+  if realRegenerationTime == nil then return end
+  local hungry = realRegenerationTime <= 0
+  pcall(function() modules.game_healthinfo.setHungryIcon(hungry) end)
+  pcall(function() modules.game_inventory.setHungryIcon(hungry) end)
+end
+
+function onFoodOpcode(protocol, opcode, buffer)
+  local ticks = tonumber(buffer)
+  if not ticks then return end
+  realRegenerationTime = ticks
+  updateHungryIcon()
+end
+
+-- Self-rescheduling 1s local ticker (same proven pattern as limitBreakTick
+-- below): only exists so the icon appears promptly once ticks run out between
+-- server pushes (login/eat/30s heartbeat), instead of waiting up to 30s.
+function foodTick()
+  if realRegenerationTime and realRegenerationTime > 0 then
+    realRegenerationTime = realRegenerationTime - 1
+    if realRegenerationTime <= 0 then
+      updateHungryIcon() -- just crossed into hungry
+    end
+  end
+  foodTickEvent = scheduleEvent(foodTick, 1000)
+end
+
 function onRealExpOpcode(protocol, opcode, buffer)
   if not skillsWindow then return end
   local value = tonumber(buffer)
@@ -194,6 +247,7 @@ function init()
   pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_OPCODE, onLimitBreakOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_MOVES_OPCODE, onLimitBreakMovesOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, REALEXP_OPCODE, onRealExpOpcode)
+  pcall(ProtocolGame.registerExtendedOpcode, FOOD_OPCODE, onFoodOpcode)
 
   connect(LocalPlayer, {
     onExperienceChange = onExperienceChange,
@@ -254,6 +308,7 @@ function terminate()
   pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_MOVES_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, REALEXP_OPCODE)
+  pcall(ProtocolGame.unregisterExtendedOpcode, FOOD_OPCODE)
 
   skillsWindow:destroy()
   skillsButton:destroy()
@@ -401,6 +456,9 @@ function refresh()
   if limitBreakTickEvent then removeEvent(limitBreakTickEvent) end
   limitBreakTickEvent = scheduleEvent(limitBreakTick, 1000)
 
+  if foodTickEvent then removeEvent(foodTickEvent) end
+  foodTickEvent = scheduleEvent(foodTick, 1000)
+
   onExperienceChange(player, player:getExperience())
   onLevelChange(player, player:getLevel(), player:getLevelPercent())
   onHealthChange(player, player:getHealth(), player:getMaxHealth())
@@ -455,8 +513,13 @@ end
 function offline()
   if expSpeedEvent then expSpeedEvent:cancel() expSpeedEvent = nil end
   if limitBreakTickEvent then removeEvent(limitBreakTickEvent) limitBreakTickEvent = nil end
+  if foodTickEvent then removeEvent(foodTickEvent) foodTickEvent = nil end
   limitBreakActive = false
   realExperience = nil -- don't leak this character's real exp into the next login
+  realRegenerationTime = nil
+  hungryBlinkOn = true
+  pcall(function() modules.game_healthinfo.setHungryIcon(false) end)
+  pcall(function() modules.game_inventory.setHungryIcon(false) end)
 end
 
 function toggle()
