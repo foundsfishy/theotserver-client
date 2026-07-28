@@ -1,0 +1,9 @@
+Module
+  name: game_tasks
+  description: Faqir's Tasks window
+  author: TheOtServer
+  sandboxed: true
+  scripts: [ tasks ]
+  dependencies: [ client_topmenu ]
+  @onLoad: init()
+  @onUnload: terminate()

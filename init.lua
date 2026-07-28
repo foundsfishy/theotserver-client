@@ -96,6 +96,15 @@ local function loadModules()
   g_modules.autoLoadModules(999)
   g_modules.ensureModuleLoaded("game_interface")
 
+  -- game_tasks (Faqir's Tasks window) is discovered fine but autoLoadModules
+  -- never picks it up on its own for a reason not yet understood (a stale
+  -- data.zip sitting in this dev folder predates the module and may be
+  -- feeding a cached registry - unconfirmed). Force it explicitly, same
+  -- pattern as crash_reporter/updater below, rather than block on that.
+  if g_modules.getModule("game_tasks") then
+    g_modules.ensureModuleLoaded("game_tasks")
+  end
+
   -- mods 1000-9999
   g_modules.autoLoadModules(9999)
 end

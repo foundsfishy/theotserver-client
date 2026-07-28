@@ -1,0 +1,396 @@
+TasksTabBar < TabBar
+TasksTabBarPanel < TabBarPanel
+TasksTabBarButton < TabBarButton
+  size: 90 25
+  font: verdana-11px-rounded
+  text-offset: 0 2
+
+  $!first:
+    anchors.left: prev.right
+    margin-left: 0
+
+  $hover !checked:
+    color: #ffffff
+
+  $checked:
+    color: #ffffff
+
+TaskButton < Button
+  height: 21
+  font: verdana-11px-rounded
+
+OfferSlot < Panel
+  height: 90
+  background-color: #1a1a1a
+  border-width: 1
+  border-color: #4a453e
+  padding: 6
+
+  UICreature
+    id: creature
+    phantom: true
+    size: 40 40
+    anchors.top: parent.top
+    anchors.left: parent.left
+    image-source: /images/ui/panel_flat
+    image-border: 1
+
+  Label
+    id: name
+    font: verdana-11px-rounded
+    anchors.top: parent.top
+    anchors.left: prev.right
+    margin-left: 8
+    text: -
+
+  Label
+    id: info
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: prev.bottom
+    anchors.left: prev.left
+    text: -
+
+  TaskButton
+    id: accept
+    !text: tr('Accept')
+    width: 70
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+
+  TaskButton
+    id: reroll
+    !text: tr('Reroll')
+    width: 90
+    anchors.bottom: parent.bottom
+    anchors.left: prev.right
+    margin-left: 6
+
+WishBanner < Panel
+  height: 40
+  background-color: #2a1e08
+  border-width: 1
+  border-color: #EF9F27
+  padding: 6
+  margin-bottom: 6
+
+  Label
+    id: label
+    font: verdana-11px-rounded
+    color: #FAC775
+    anchors.top: parent.top
+    anchors.left: parent.left
+    text: -
+
+  Label
+    id: name
+    font: verdana-11px-rounded
+    anchors.top: prev.bottom
+    anchors.left: parent.left
+    text: -
+
+  TaskButton
+    id: accept
+    !text: tr('Accept')
+    width: 70
+    anchors.verticalCenter: parent.verticalCenter
+    anchors.right: parent.right
+
+TasksOffersPanel < Panel
+  ScrollablePanel
+    id: offersScroll
+    anchors.fill: parent
+    vertical-scrollbar: offersScrollBar
+    layout: verticalBox
+
+    WishBanner
+      id: wishBanner
+
+    OfferSlot
+      id: slot1
+    OfferSlot
+      id: slot2
+    OfferSlot
+      id: slot3
+    OfferSlot
+      id: slot4
+    OfferSlot
+      id: slot5
+
+    TaskButton
+      id: shuffle
+      !text: tr('Shuffle all - 75000 gold')
+
+  VerticalScrollBar
+    id: offersScrollBar
+    anchors.top: offersScroll.top
+    anchors.bottom: offersScroll.bottom
+    anchors.right: parent.right
+    step: 14
+    pixels-scroll: true
+
+TasksActivePanel < Panel
+  UICreature
+    id: creature
+    phantom: true
+    size: 48 48
+    anchors.top: parent.top
+    anchors.left: parent.left
+    image-source: /images/ui/panel_flat
+    image-border: 1
+
+  Label
+    id: name
+    font: verdana-11px-rounded
+    anchors.top: parent.top
+    anchors.left: prev.right
+    margin-left: 10
+    text: No active task
+
+  Label
+    id: progressText
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: prev.bottom
+    anchors.left: prev.left
+    text: -
+
+  ProgressBar
+    id: progress
+    background-color: green
+    height: 8
+    anchors.top: prev.bottom
+    margin-top: 10
+    anchors.left: parent.left
+    anchors.right: parent.right
+    phantom: false
+
+  Label
+    id: ladderTeaser
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: prev.bottom
+    margin-top: 10
+    anchors.left: parent.left
+    text-wrap: true
+    text: -
+
+  TaskButton
+    id: drop
+    !text: tr('Drop task')
+    anchors.bottom: parent.bottom
+    anchors.right: parent.right
+    width: 90
+
+TasksCatalogPanel < Panel
+  Label
+    id: searchLabel
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: parent.top
+    anchors.left: parent.left
+    text: Search by name or id
+
+  TextEdit
+    id: search
+    !tooltip: tr('Search 248 tasks by name or id')
+    anchors.top: prev.bottom
+    margin-top: 2
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  TextList
+    id: catalogList
+    anchors.top: prev.bottom
+    margin-top: 6
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    focusable: false
+    vertical-scrollbar: catalogListScrollBar
+
+  VerticalScrollBar
+    id: catalogListScrollBar
+    anchors.top: catalogList.top
+    anchors.bottom: catalogList.bottom
+    anchors.right: catalogList.right
+    step: 14
+    pixels-scroll: true
+
+TasksHuntPanel < Panel
+  Label
+    id: huntStatus
+    font: verdana-11px-rounded
+    anchors.top: parent.top
+    anchors.left: parent.left
+    text-wrap: true
+    text: -
+
+  ProgressBar
+    id: huntProgress
+    background-color: #E24B4A
+    height: 8
+    anchors.top: prev.bottom
+    margin-top: 10
+    anchors.left: parent.left
+    anchors.right: parent.right
+    phantom: false
+
+  TaskButton
+    id: huntAccept
+    !text: tr('Accept hunt')
+    anchors.top: prev.bottom
+    margin-top: 10
+    anchors.left: parent.left
+    width: 110
+
+  TaskButton
+    id: huntDrop
+    !text: tr('Drop hunt')
+    anchors.top: prev.top
+    anchors.left: prev.right
+    margin-left: 6
+    width: 110
+
+TasksProgressPanel < Panel
+  Label
+    id: streakLabel
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: parent.top
+    anchors.left: parent.left
+    text: Streak
+
+  Panel
+    id: streakRow
+    height: 26
+    anchors.top: prev.bottom
+    margin-top: 4
+    anchors.left: parent.left
+    anchors.right: parent.right
+    layout:
+      type: horizontalBox
+      spacing: 5
+
+  Label
+    id: weeklyLabel
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: prev.bottom
+    margin-top: 12
+    anchors.left: parent.left
+    text: Weekly challenge
+
+  ProgressBar
+    id: weeklyProgress
+    background-color: #378ADD
+    height: 8
+    anchors.top: prev.bottom
+    margin-top: 4
+    anchors.left: parent.left
+    anchors.right: parent.right
+    phantom: false
+
+  Label
+    id: passLabel
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: prev.bottom
+    margin-top: 12
+    anchors.left: parent.left
+    text: Season pass
+
+  Panel
+    id: passRow
+    height: 8
+    anchors.top: prev.bottom
+    margin-top: 4
+    anchors.left: parent.left
+    anchors.right: parent.right
+    layout:
+      type: horizontalBox
+      spacing: 3
+
+  Label
+    id: rankingsLabel
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: prev.bottom
+    margin-top: 12
+    anchors.left: parent.left
+    text: Top killers / rankings
+
+  TextList
+    id: rankingsList
+    anchors.top: prev.bottom
+    margin-top: 4
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    focusable: false
+
+OddsRow < Panel
+  height: 30
+  margin-bottom: 4
+
+  Label
+    id: tierLabel
+    font: verdana-11px-rounded
+    anchors.top: parent.top
+    anchors.left: parent.left
+    text: -
+
+  Label
+    id: rewardText
+    font: verdana-11px-rounded
+    color: #aaaaaa
+    anchors.top: parent.top
+    anchors.left: prev.right
+    margin-left: 10
+    text: -
+
+  ProgressBar
+    id: sigilBar
+    background-color: #EF9F27
+    height: 6
+    anchors.top: prev.bottom
+    margin-top: 3
+    anchors.left: parent.left
+    anchors.right: parent.right
+    phantom: false
+
+TasksOddsPanel < Panel
+  layout: verticalBox
+
+  OddsRow
+    id: oddsRow1
+  OddsRow
+    id: oddsRow2
+  OddsRow
+    id: oddsRow3
+  OddsRow
+    id: oddsRow4
+  OddsRow
+    id: oddsRow5
+
+TasksWindow < MainWindow
+  id: tasksWindow
+  !text: tr("Faqir's Tasks")
+  size: 420 460
+
+  @onEscape: Tasks.toggle()
+
+  TasksTabBar
+    id: tasksTabBar
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    height: 25
+
+  Panel
+    id: tasksTabContent
+    anchors.top: prev.bottom
+    margin-top: 6
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
