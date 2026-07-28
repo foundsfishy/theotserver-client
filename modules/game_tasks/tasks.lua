@@ -3,34 +3,64 @@
 -- server logic; every button is meant to call the exact same Tasks.*
 -- functions those two already call.
 --
--- PHASE A (this file, as first built): window + tabs render with STATIC
--- placeholder data. No opcode exists yet, no button is wired to the server.
--- Safe to test purely as a UI shell before any server-side risk.
--- PHASE B (next): a state-push opcode feeds real data in, and each button
--- sends a small write-opcode that resolves to Tasks.acceptTask/rerollOffer/
--- etc. - see the TODO markers below for exactly where that plugs in.
+-- PHASE A: window + tabs. Offers and Active task now render REAL data, pushed
+-- by Player.sendTaskState (data/lib/core/player.lua) over opcode 72 - on
+-- login, and after any accept/drop/reroll/shuffle/choose. It does NOT yet
+-- update on every kill, so progress is as of the last push, not tick-by-tick.
+-- Catalog/Hunt/Progress tabs are still static placeholders.
+-- PHASE B (next): every button below sends a small write-opcode that
+-- resolves to Tasks.acceptTask/rerollOffer/etc. - see the TODO markers.
 
 tasksWindow = nil
 tasksButton = nil
 local tasksTabBar = nil
 local tabPanels = {}
 
--- Real numbers from data/lib/tasks.lua (2026-07-27 reroll retier) - kept
--- here ONLY as Phase A placeholder data. Once the state-push opcode exists,
--- these get replaced by whatever the server actually sends, per player.
+-- Real numbers from data/lib/tasks.lua (2026-07-27 reroll retier). These are
+-- server-wide constants (not per-player), so showing them directly here -
+-- rather than waiting on a push - is accurate from the moment the window opens.
 local REROLL_COST_BY_TIER = { [1] = 20000, [2] = 40000, [3] = 60000, [4] = 80000, [5] = 100000 }
 local SIGIL_CHANCE_BY_TIER = { [1] = 40, [2] = 18, [3] = 40, [4] = 15, [5] = 5 }
 local TIER_COLOR = {
   [1] = '#639922', [2] = '#378ADD', [3] = '#7F77DD', [4] = '#EF9F27', [5] = '#E24B4A',
 }
 
-local PLACEHOLDER_OFFERS = {
-  { slot = 1, name = 'Cyclops',     tier = 2, target = 220, minLevel = 25 },
-  { slot = 2, name = 'Minotaur',    tier = 1, target = 450, minLevel = 8  },
-  { slot = 3, name = 'Dragon Lord', tier = 4, target = 80,  minLevel = 60 },
-  { slot = 4, name = 'Demon',       tier = 5, target = 40,  minLevel = 80 },
-  { slot = 5, name = 'Troll',       tier = 1, target = 450, minLevel = 8  },
-}
+-- Matches Player.sendTaskState's TASKSTATE_OPCODE in data/lib/core/player.lua -
+-- keep both in sync if this number ever changes.
+TASKSTATE_OPCODE = 72
+
+-- "<id>,<name>,<tier>,<target>,<minLevel>;...(x5, '-1' if empty)|<active>"
+-- active is "none" or "<id>,<name>,<progress>,<target>".
+function onTaskStateOpcode(protocol, opcode, buffer)
+  local offersStr, activeStr = buffer:match('^(.-)|(.*)$')
+  if not offersStr then return end
+
+  local offers = {}
+  local slot = 0
+  for entry in (offersStr .. ';'):gmatch('(.-);') do
+    slot = slot + 1
+    if entry ~= '-1' and entry ~= '' then
+      local id, name, tier, target, minLevel = entry:match('^(%d+),(.-),(%d+),(%d+),(%d+)$')
+      if id then
+        offers[slot] = {
+          id = tonumber(id), name = name, tier = tonumber(tier),
+          target = tonumber(target), minLevel = tonumber(minLevel),
+        }
+      end
+    end
+  end
+
+  local active = nil
+  if activeStr and activeStr ~= 'none' then
+    local id, name, progress, target = activeStr:match('^(%d+),(.-),(%d+),(%d+)$')
+    if id then
+      active = { id = tonumber(id), name = name, progress = tonumber(progress), target = tonumber(target) }
+    end
+  end
+
+  fillOffers(offers)
+  fillActive(active)
+end
 
 function init()
   connect(g_game, { onGameEnd = offline })
@@ -60,18 +90,20 @@ function init()
   tasksTabBar:addTab(tr('Progress'), tabPanels.progress)
   tasksTabBar:addTab(tr('Reward odds'), tabPanels.odds)
 
-  fillOffers()
-  fillActive()
+  -- Empty state until the first push arrives (login, or manually forcing
+  -- this module to load while already in-game won't have one yet - a relog
+  -- triggers the push since it only fires from data/creaturescripts/scripts/
+  -- login.lua today).
+  fillOffers(nil)
+  fillActive(nil)
   fillOdds()
 
-  -- TODO Phase B: register the state-push opcode here, e.g.
-  -- ProtocolGame.registerExtendedOpcode(TASK_STATE_OPCODE, onTaskStateOpcode)
-  -- and call fill*() from that handler instead of once at init with
-  -- placeholder data.
+  pcall(ProtocolGame.registerExtendedOpcode, TASKSTATE_OPCODE, onTaskStateOpcode)
 end
 
 function terminate()
   disconnect(g_game, { onGameEnd = offline })
+  pcall(ProtocolGame.unregisterExtendedOpcode, TASKSTATE_OPCODE)
   if tasksButton then tasksButton:destroy() end
   if tasksWindow then tasksWindow:destroy() end
   tasksButton = nil
@@ -96,51 +128,86 @@ function toggle()
 end
 
 -- ============================================================================
--- Offers tab
+-- Offers tab - offers is nil (nothing pushed yet) or a table keyed 1-5,
+-- any of which may itself be nil (that slot came back empty from the server).
 -- ============================================================================
-function fillOffers()
+function fillOffers(offers)
   local panel = tabPanels.offers
-  local wish = panel:getChildById('wishBanner')
-  wish:getChildById('label'):setText(tr('Wish of the day - free'))
-  wish:getChildById('name'):setText('Dragon')
-  wish:getChildById('accept').onClick = function()
-    -- TODO Phase B: send an accept-wish opcode -> Tasks.acceptTask server-side
-  end
 
-  for _, offer in ipairs(PLACEHOLDER_OFFERS) do
-    local slot = panel:getChildById('slot' .. offer.slot)
+  -- Wish of the Day/Grand Wish aren't in the opcode 72 payload yet (only the
+  -- 5 core offers + active task) - shown as a neutral not-yet-wired state
+  -- rather than a fake specific monster, so nothing here claims to be real
+  -- before it is. TODO: add these to the push once this tab needs them live.
+  local wish = panel:recursiveGetChildById('wishBanner')
+  wish:getChildById('label'):setText(tr('Wish of the day'))
+  wish:getChildById('name'):setText(tr('(not wired up yet)'))
+  wish:getChildById('accept'):setEnabled(false)
+
+  for i = 1, 5 do
+    local slot = panel:recursiveGetChildById('slot' .. i)
     if slot then
-      slot:getChildById('name'):setText(offer.name)
-      slot:getChildById('name'):setColor(TIER_COLOR[offer.tier])
-      slot:getChildById('info'):setText(('Tier %d - kill %d - lvl %d+'):format(offer.tier, offer.target, offer.minLevel))
-
+      local offer = offers and offers[i]
+      local acceptBtn = slot:getChildById('accept')
       local rerollBtn = slot:getChildById('reroll')
-      rerollBtn:setText(tr('Reroll') .. ' ' .. REROLL_COST_BY_TIER[offer.tier] .. 'g')
-      rerollBtn.onClick = function()
-        -- TODO Phase B: send opcode(reroll, offer.slot) -> Tasks.rerollOffer
+      if offer then
+        slot:getChildById('name'):setText(offer.name)
+        slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
+        slot:getChildById('info'):setText(('Tier %d - kill %d - lvl %d+'):format(offer.tier, offer.target, offer.minLevel))
+        rerollBtn:setText(tr('Reroll') .. ' ' .. (REROLL_COST_BY_TIER[offer.tier] or 0) .. 'g')
+        acceptBtn:setEnabled(true)
+        rerollBtn:setEnabled(true)
+      else
+        slot:getChildById('name'):setText(tr('No offer'))
+        slot:getChildById('name'):setColor('#888888')
+        slot:getChildById('info'):setText('-')
+        rerollBtn:setText(tr('Reroll'))
+        acceptBtn:setEnabled(false)
+        rerollBtn:setEnabled(false)
       end
 
-      slot:getChildById('accept').onClick = function()
-        -- TODO Phase B: send opcode(accept, offer.slot) -> Tasks.acceptTask
+      rerollBtn.onClick = function()
+        -- TODO Phase B: send opcode(reroll, i) -> Tasks.rerollOffer
+      end
+      acceptBtn.onClick = function()
+        -- TODO Phase B: send opcode(accept, offers[i].id) -> Tasks.acceptTask
       end
     end
   end
 
-  panel:getChildById('shuffle').onClick = function()
+  panel:recursiveGetChildById('shuffle').onClick = function()
     -- TODO Phase B: send opcode(shuffle) -> Tasks.shuffleOffers
   end
 end
 
 -- ============================================================================
--- Active task tab
+-- Active task tab - active is nil (no task, or nothing pushed yet) or
+-- {id, name, progress, target}.
 -- ============================================================================
-function fillActive()
+function fillActive(active)
   local panel = tabPanels.active
-  panel:getChildById('name'):setText('Dragon Lord')
-  panel:getChildById('progressText'):setText('52 / 80 killed')
-  panel:getChildById('progress'):setPercent(65)
-  panel:getChildById('ladderTeaser'):setText('Next weapon unlock: level 40 (you: 32)')
-  panel:getChildById('drop').onClick = function()
+  local dropBtn = panel:getChildById('drop')
+
+  if active then
+    panel:getChildById('name'):setText(active.name)
+    panel:getChildById('progressText'):setText(('%d / %d killed'):format(active.progress, active.target))
+    local percent = 0
+    if active.target > 0 then
+      percent = math.min(100, math.floor(active.progress * 100 / active.target))
+    end
+    panel:getChildById('progress'):setPercent(percent)
+    dropBtn:setEnabled(true)
+  else
+    panel:getChildById('name'):setText(tr('No active task'))
+    panel:getChildById('progressText'):setText('-')
+    panel:getChildById('progress'):setPercent(0)
+    dropBtn:setEnabled(false)
+  end
+
+  -- TODO: not in the opcode 72 payload yet (warrior ladder milestone state) -
+  -- left blank rather than showing a fake number.
+  panel:getChildById('ladderTeaser'):setText('')
+
+  dropBtn.onClick = function()
     -- TODO Phase B: send opcode(drop) -> Tasks.dropTask
   end
 end
