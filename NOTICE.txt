@@ -1,0 +1,47 @@
+TheOtServer Client - copyright and licensing notice
+===================================================
+
+This client is built on OTClientV8, which is distributed under the MIT
+License. The full upstream license text, including its required copyright
+notices, is in the accompanying LICENSE file and is reproduced with this
+distribution as that license requires.
+
+  Copyright (c) 2010-2017 OTClient   <https://github.com/edubart/otclient>
+  Copyright (c) 2018-2023 OTClientV8 <https://github.com/OTCv8/otclientv8>
+
+The MIT License covers the base client engine ONLY.
+
+
+TheOtServer original work
+-------------------------
+
+  Copyright (c) 2026 TheOtServer. All rights reserved.
+
+Everything added on top of the base client by TheOtServer is original work
+and is NOT covered by the MIT License above. That includes, without
+limitation:
+
+  - the custom interface modules written for this server, and their
+    layout, styling and behaviour
+  - the custom artwork, skin, logos, icons and other visual assets
+  - the custom sounds, copy and in-game text authored for this server
+  - the game-design systems these interfaces present, and the specific
+    wording, structure and presentation used to express them
+
+These are made available to players solely for the purpose of connecting to
+and playing on TheOtServer. No permission is granted to copy, redistribute,
+modify, sublicense, sell, or reuse them in whole or in part, in any other
+project or server, whether modified or unmodified.
+
+Reusing the MIT-licensed base client is entirely permitted and encouraged -
+get it from the upstream project linked above. Reusing this server's original
+interface work, artwork or branding is not.
+
+"TheOtServer" and the TheOtServer logo are trademarks of TheOtServer and may
+not be used to identify, promote or brand any other project or service.
+
+
+Contact
+-------
+
+Questions about licensing or permissions: support@theotserver.com

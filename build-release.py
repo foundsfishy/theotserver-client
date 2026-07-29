@@ -31,6 +31,14 @@ RUNTIME_DIRS   = ["modules", "data", "layouts", "mods"]
 RUNTIME_FILES  = ["init.lua"]
 # Files that ship loosely alongside data.zip in the release (the binaries).
 BINARY_GLOBS   = ["*.exe", "*.dll", "*.ico"]
+# Legal notices that MUST ship in the zip root. LICENSE is the upstream
+# OTClientV8 MIT text, and MIT requires that notice to be included in "all
+# copies or substantial portions of the Software" - the player download is a
+# copy, so omitting it was a real (if small) compliance gap. NOTICE.txt is
+# TheOtServer's own copyright over the custom modules/artwork the MIT license
+# does NOT cover. Neither has a file extension the binary globs would catch,
+# which is exactly why they were being dropped silently.
+LEGAL_FILES    = ["LICENSE", "NOTICE.txt"]
 # Never package these (dev-only, other-platform, player runtime state, obsolete).
 EXCLUDE_FILES  = [
     "host_local.lua", "host_local.example.lua",   # DEV localhost toggle - NEVER ship
@@ -83,8 +91,16 @@ with zipfile.ZipFile(OUT, "w", zipfile.ZIP_DEFLATED) as z:
         full = os.path.join(HERE, f)
         if not os.path.isfile(full) or skip(f):
             continue
-        if any(fnmatch.fnmatch(f, g) for g in BINARY_GLOBS):
+        if any(fnmatch.fnmatch(f, g) for g in BINARY_GLOBS) or f in LEGAL_FILES:
             z.write(full, os.path.join(TOP, f)); count += 1
+
+# Safety gate: the MIT notice is a licence obligation, not a nice-to-have -
+# fail the build rather than silently ship a non-compliant zip.
+_names = zipfile.ZipFile(OUT).namelist()
+for _legal in LEGAL_FILES:
+    if not any(n.endswith("/" + _legal) or n == _legal for n in _names):
+        os.remove(OUT)
+        sys.exit("ABORTED: " + _legal + " missing from the release zip (required notice)")
 
 # Safety gate: no loose modules/init.lua/host_local in the release (would break archive mode).
 names = zipfile.ZipFile(OUT).namelist()
