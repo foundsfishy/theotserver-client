@@ -1,12 +1,10 @@
 TasksTabBar < TabBar
 TasksTabBarPanel < TabBarPanel
 TasksTabBarButton < TabBarButton
-  // The Offers/Catalog lists reserve their rightmost 16px for the vertical
-  // scrollbar (see offersScroll/catalogList margin-right:16), so the card
-  // itself actually ends at 388 (window content width) - 16 = 372, not the
-  // full 388. 6 equal tabs + 5 equal gaps sized to land there instead:
-  // 6*60+5*2=370, so the last tab's right edge lines up with where the
-  // scrollbar starts, not past it.
+  // WIDTH HERE IS IGNORED - do not tune it. UITabBar:addTab() overwrites every
+  // tab's width with its own text width the moment it is created, and
+  // layoutTabs() (tasks.lua) then expands them to fill the row. Only the height
+  // of this size: line has any effect. Change tab sizing in layoutTabs().
   size: 60 25
   font: verdana-11px-rounded
   text-offset: 0 2
@@ -434,16 +432,11 @@ TasksProgressPanel < Panel
     anchors.right: parent.right
     text: Streak
 
-  Panel
-    id: streakRow
-    height: 26
-    anchors.top: prev.bottom
-    margin-top: 4
-    anchors.left: parent.left
-    anchors.right: parent.right
-    layout:
-      type: horizontalBox
-      spacing: 5
+  // streakRow (26px) and passRow (8px) removed 2026-07-29: both were empty
+  // panels no Lua ever populated - placeholders for the unbuilt day-pip /
+  // season-segment widgets - so they rendered as invisible dead gaps and were
+  // the source of the tab's uneven spacing. Re-add them WITH their fill code,
+  // not before it.
 
   Label
     id: weeklyLabel
@@ -474,17 +467,6 @@ TasksProgressPanel < Panel
     anchors.left: parent.left
     anchors.right: parent.right
     text: Season pass
-
-  Panel
-    id: passRow
-    height: 8
-    anchors.top: prev.bottom
-    margin-top: 4
-    anchors.left: parent.left
-    anchors.right: parent.right
-    layout:
-      type: horizontalBox
-      spacing: 3
 
   Label
     id: rankingsLabel

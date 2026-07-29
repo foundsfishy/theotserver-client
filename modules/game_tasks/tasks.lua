@@ -194,6 +194,49 @@ function onTaskProgressOpcode(protocol, opcode, buffer)
   })
 end
 
+-- Tab buttons are sized at RUNTIME from however many tabs actually exist, so
+-- adding or hiding one (the Hunt tab, 2026-07-29) re-fits the row evenly
+-- instead of leaving a dead gap or overflowing the window. The .otui width is
+-- only a fallback for the instant before this runs.
+-- 372 = the window's 388px content area (420 wide, minus MainWindow's 16px
+-- padding each side) minus the 16px the Offers/Catalog lists reserve for their
+-- scrollbar - so the last tab's right edge lines up with the cards below it.
+local TAB_ROW_WIDTH = 372
+local TAB_GAP = 4
+
+-- NOTE: UITabBar:addTab() already sets each tab's width to fit its OWN text
+-- (getTextSize().width + padding), which silently overrides any width set in
+-- the .otui style - so the row naturally ends wherever the labels happen to
+-- add up, never at the window edge.
+--
+-- This does NOT flatten them to one equal width: forcing that shrinks the long
+-- labels ("Reward Odds") below what their text needs and clips them. Instead it
+-- KEEPS each tab's natural text width and shares the leftover space out evenly,
+-- so every tab grows by the same amount, nothing clips, and dropping a tab
+-- widens the survivors to absorb what it freed.
+function layoutTabs()
+  if not tasksTabBar then return end
+  local tabs = tasksTabBar:getTabs()
+  local count = #tabs
+  if count == 0 then return end
+
+  local natural, total = {}, 0
+  for i, tab in ipairs(tabs) do
+    local w = tab:getTextSize().width + tab:getPaddingLeft() + tab:getPaddingRight()
+    natural[i] = w
+    total = total + w
+  end
+
+  -- Only ever expand. If the labels already overflow the row (slack < 0),
+  -- leave them at their natural width rather than clipping every one of them.
+  local slack = TAB_ROW_WIDTH - TAB_GAP * (count - 1) - total
+  local share = slack > 0 and math.floor(slack / count) or 0
+
+  for i, tab in ipairs(tabs) do
+    tab:setWidth(natural[i] + share)
+  end
+end
+
 -- The lamp icon is set here rather than once in init(). init() runs at the
 -- login screen, before any game connection - item sprites are tied to the
 -- connected game version and aren't loaded yet, so setItemId() at boot
@@ -239,16 +282,23 @@ function init()
   tabPanels.offers   = g_ui.createWidget('TasksOffersPanel')
   tabPanels.active   = g_ui.createWidget('TasksActivePanel')
   tabPanels.catalog  = g_ui.createWidget('TasksCatalogPanel')
-  tabPanels.hunt     = g_ui.createWidget('TasksHuntPanel')
   tabPanels.progress = g_ui.createWidget('TasksProgressPanel')
   tabPanels.odds     = g_ui.createWidget('TasksOddsPanel')
 
   tasksTabBar:addTab(tr('Offers'), tabPanels.offers)
   tasksTabBar:addTab(tr('Active Task'), tabPanels.active)
   catalogTab = tasksTabBar:addTab(tr('Catalog'), tabPanels.catalog)
-  tasksTabBar:addTab(tr('Hunt'), tabPanels.hunt)
   progressTab = tasksTabBar:addTab(tr('Progress'), tabPanels.progress)
   tasksTabBar:addTab(tr('Reward Odds'), tabPanels.odds)
+
+  -- HUNT TAB HIDDEN (2026-07-29, Mizo): the feature is unbuilt, so shipping a
+  -- tab of static placeholder text to live players advertises something that
+  -- does nothing. TasksHuntPanel's style is left intact in tasks.otui - to
+  -- bring it back, restore the createWidget above and one addTab line here;
+  -- layoutTabs() re-fits the row automatically, no width numbers to touch.
+
+  -- Sized AFTER every addTab, from however many tabs actually exist.
+  layoutTabs()
 
   -- Catalog/Progress are pushed on-demand (not always-on like Offers/Active)
   -- since a search result list and the season/streak/rankings text are only
