@@ -3,63 +3,195 @@
 -- server logic; every button is meant to call the exact same Tasks.*
 -- functions those two already call.
 --
--- PHASE A: window + tabs. Offers and Active task now render REAL data, pushed
--- by Player.sendTaskState (data/lib/core/player.lua) over opcode 72 - on
--- login, and after any accept/drop/reroll/shuffle/choose. It does NOT yet
--- update on every kill, so progress is as of the last push, not tick-by-tick.
--- Catalog/Hunt/Progress tabs are still static placeholders.
--- PHASE B (next): every button below sends a small write-opcode that
--- resolves to Tasks.acceptTask/rerollOffer/etc. - see the TODO markers.
+-- PHASE A: window + tabs. Offers and Active task render REAL data, pushed by
+-- Player.sendTaskState (data/lib/core/player.lua) over opcode 72 - on login,
+-- after any accept/drop/reroll/shuffle/choose, and per-kill for the active
+-- task's progress.
+-- PHASE B: Accept/Reroll/Shuffle (Offers) and Drop (Active task) send opcode
+-- 73, resolved server-side through the exact same Tasks.acceptTask/
+-- rerollOffer/shuffleOffers/dropTask that !task calls.
+-- PHASE C: Catalog (search + hand-pick, opcode 74) and Progress (streak/
+-- weekly/season pass/rankings, opcode 75) are pushed ON-DEMAND when their
+-- tab is opened/typed in, not always-on like Offers/Active. Hunt tab is
+-- still a static placeholder.
 
 tasksWindow = nil
 tasksButton = nil
 local tasksTabBar = nil
 local tabPanels = {}
+-- File-scope so refreshCurrentTab() (called from toggle()) can tell which tab
+-- is showing without re-deriving it from the tab bar's children.
+local catalogTab = nil
+local progressTab = nil
 
 -- Real numbers from data/lib/tasks.lua (2026-07-27 reroll retier). These are
 -- server-wide constants (not per-player), so showing them directly here -
 -- rather than waiting on a push - is accurate from the moment the window opens.
+-- Last hand-pick cost the server told us (opcode 74) - level-scaled, so it's
+-- pushed rather than derived here. Used by the hand-pick confirm dialog so it
+-- can state the real price instead of pointing at the tab header.
+local lastChooseCost = 0
+
+-- Comfortably above handleTaskAction's 300ms server throttle, so a burst of
+-- keystrokes collapses into ONE search that is never the one thrown away.
+local CATALOG_SEARCH_DEBOUNCE_MS = 350
+local catalogSearchEvent = nil
+
 local REROLL_COST_BY_TIER = { [1] = 20000, [2] = 40000, [3] = 60000, [4] = 80000, [5] = 100000 }
 local SIGIL_CHANCE_BY_TIER = { [1] = 40, [2] = 18, [3] = 40, [4] = 15, [5] = 5 }
 local TIER_COLOR = {
   [1] = '#639922', [2] = '#378ADD', [3] = '#7F77DD', [4] = '#EF9F27', [5] = '#E24B4A',
 }
 
+-- Same tier identity, brightened for the Catalog list specifically. TIER_COLOR
+-- is tuned against the Offers tab's near-black slot panels (#1a1a1a); on the
+-- Catalog TextList's much lighter grey the mid-tone blues/purples especially
+-- drop to unreadable. No text-outline exists in this client, so contrast has
+-- to come from the color itself.
+-- Deliberately unreadable stand-ins, shaped like real catalog rows (id, name of
+-- plausible length, tier suffix) so the empty list reads as ghosted content
+-- rather than a blank grey box. Fixed list, not randomised: a skeleton that
+-- reshuffles every keystroke draws the eye instead of receding.
+local CATALOG_GHOST_ROWS = {
+  '[--] Nnnrrmm Vhaalk (Tier -)',
+  '[--] Skrenn (Tier -)',
+  '[--] Ghorrum Slaath (Tier -)',
+  '[--] Vaelmirr Dhun (Tier -)',
+  '[--] Prakk (Tier -)',
+  '[--] Ithreneth Corr (Tier -)',
+  '[--] Mmurgash (Tier -)',
+  '[--] Xhalvinn Traak (Tier -)',
+}
+
+local CATALOG_TIER_COLOR = {
+  [1] = '#8FD03A', [2] = '#6FB6FF', [3] = '#B3ACFF', [4] = '#FFC257', [5] = '#FF8080',
+}
+
 -- Matches Player.sendTaskState's TASKSTATE_OPCODE in data/lib/core/player.lua -
 -- keep both in sync if this number ever changes.
 TASKSTATE_OPCODE = 72
 
--- "<id>,<name>,<tier>,<target>,<minLevel>;...(x5, '-1' if empty)|<active>"
--- active is "none" or "<id>,<name>,<progress>,<target>".
+-- Matches TASKACTION_OPCODE in data/lib/core/player.lua. Sends
+-- "<action>[,<arg>]" - the server resolves it through the exact same
+-- Tasks.acceptTask/rerollOffer/shuffleOffers/dropTask/chooseTask that !task
+-- calls, and pushes a fresh opcode 72 state back on success (accept/reroll/
+-- shuffle/drop/choose), so no local echo is needed for those. search/progress
+-- are pure reads answered on TASKCATALOG_OPCODE/TASKPROGRESS_OPCODE instead.
+TASKACTION_OPCODE = 73
+
+-- Matches TASKCATALOG_OPCODE/TASKPROGRESS_OPCODE in data/lib/core/player.lua.
+TASKCATALOG_OPCODE = 74
+TASKPROGRESS_OPCODE = 75
+
+-- 20000 -> "20K", 150000 -> "150K", 284265 -> "284K". Anything under 1000 stays
+-- a plain number. Player-facing shorthand only - every actual charge is still
+-- the exact server-side amount, this never rounds what is paid.
+local function goldText(amount)
+  amount = tonumber(amount) or 0
+  if amount >= 1000 then
+    return math.floor(amount / 1000) .. 'K'
+  end
+  return tostring(amount)
+end
+
+local function sendTaskAction(payload)
+  local protocol = g_game.getProtocolGame()
+  if not protocol then return end
+  protocol:sendExtendedOpcode(TASKACTION_OPCODE, payload)
+end
+
+-- Shared shape used by an offer AND the Wish of the Day - both are just "a
+-- task", so both parse the same 11-field entry:
+-- "<id>,<name>,<tier>,<target>,<minLevel>,<lookType>,<head>,<body>,<legs>,
+-- <feet>,<addons>". Returns nil if entry is "-1" (empty) or malformed.
+local function parseTaskEntry(entry)
+  if not entry or entry == '-1' or entry == '' then return nil end
+  local id, name, tier, target, minLevel, lookType, head, body, legs, feet, addons =
+    entry:match('^(%d+),(.-),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)$')
+  if not id then return nil end
+  return {
+    id = tonumber(id), name = name, tier = tonumber(tier),
+    target = tonumber(target), minLevel = tonumber(minLevel),
+    outfit = {
+      type = tonumber(lookType), head = tonumber(head), body = tonumber(body),
+      legs = tonumber(legs), feet = tonumber(feet), addons = tonumber(addons),
+    },
+  }
+end
+
+-- "<offer entry>;...(x5, '-1' if empty)|<wish entry, or -1>|<active>". active
+-- is "none" or "<id>,<name>,<progress>,<target>,<lookType>,<head>,<body>,
+-- <legs>,<feet>,<addons>".
 function onTaskStateOpcode(protocol, opcode, buffer)
-  local offersStr, activeStr = buffer:match('^(.-)|(.*)$')
+  local offersStr, wishStr, activeStr = buffer:match('^(.-)|(.-)|(.*)$')
   if not offersStr then return end
 
   local offers = {}
   local slot = 0
   for entry in (offersStr .. ';'):gmatch('(.-);') do
     slot = slot + 1
-    if entry ~= '-1' and entry ~= '' then
-      local id, name, tier, target, minLevel = entry:match('^(%d+),(.-),(%d+),(%d+),(%d+)$')
+    offers[slot] = parseTaskEntry(entry)
+  end
+
+  local wish = parseTaskEntry(wishStr)
+
+  local active = nil
+  if activeStr and activeStr ~= 'none' then
+    local id, name, progress, target, lookType, head, body, legs, feet, addons =
+      activeStr:match('^(%d+),(.-),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)$')
+    if id then
+      active = {
+        id = tonumber(id), name = name, progress = tonumber(progress), target = tonumber(target),
+        outfit = {
+          type = tonumber(lookType), head = tonumber(head), body = tonumber(body),
+          legs = tonumber(legs), feet = tonumber(feet), addons = tonumber(addons),
+        },
+      }
+    end
+  end
+
+  fillOffers(offers, wish)
+  fillActive(active)
+end
+
+-- "<chooseCost>|<id>,<name>,<tier>;..." (empty after the '|' if no matches).
+function onTaskCatalogOpcode(protocol, opcode, buffer)
+  local costStr, matchesStr = buffer:match('^(%d+)|(.*)$')
+  if not costStr then return end
+
+  local matches = {}
+  if matchesStr ~= '' then
+    for entry in (matchesStr .. ';'):gmatch('(.-);') do
+      local id, name, tier = entry:match('^(%d+),(.-),(%d+)$')
       if id then
-        offers[slot] = {
-          id = tonumber(id), name = name, tier = tonumber(tier),
-          target = tonumber(target), minLevel = tonumber(minLevel),
-        }
+        matches[#matches + 1] = { id = tonumber(id), name = name, tier = tonumber(tier) }
       end
     end
   end
 
-  local active = nil
-  if activeStr and activeStr ~= 'none' then
-    local id, name, progress, target = activeStr:match('^(%d+),(.-),(%d+),(%d+)$')
-    if id then
-      active = { id = tonumber(id), name = name, progress = tonumber(progress), target = tonumber(target) }
-    end
-  end
+  fillCatalog(tonumber(costStr), matches)
+end
 
-  fillOffers(offers)
-  fillActive(active)
+-- 6 pipe-joined fields: streakText|weeklyText|weeklyCount|weeklyTarget|
+-- passText|rankingText (rankingText may itself contain real newlines - it's
+-- last, so that's safe).
+function onTaskProgressOpcode(protocol, opcode, buffer)
+  -- Numeric fields accept an optional decimal tail ("3" or "3.0"). The server
+  -- pins them to integers, but a Lua storage value can surface as a float and
+  -- a strict %d+ here silently blanked the ENTIRE tab over one stray ".0" -
+  -- too brittle for a display-only path.
+  local streakText, weeklyText, weeklyCount, weeklyTarget, passText, rankingText =
+    buffer:match('^(.-)|(.-)|([%d%.]+)|([%d%.]+)|(.-)|(.*)$')
+  if not streakText then return end
+
+  fillProgress({
+    streakText = streakText,
+    weeklyText = weeklyText,
+    weeklyCount = math.floor(tonumber(weeklyCount) or 0),
+    weeklyTarget = math.floor(tonumber(weeklyTarget) or 0),
+    passText = passText,
+    rankingText = rankingText,
+  })
 end
 
 function init()
@@ -85,25 +217,95 @@ function init()
 
   tasksTabBar:addTab(tr('Offers'), tabPanels.offers)
   tasksTabBar:addTab(tr('Active task'), tabPanels.active)
-  tasksTabBar:addTab(tr('Catalog'), tabPanels.catalog)
+  catalogTab = tasksTabBar:addTab(tr('Catalog'), tabPanels.catalog)
   tasksTabBar:addTab(tr('Hunt'), tabPanels.hunt)
-  tasksTabBar:addTab(tr('Progress'), tabPanels.progress)
+  progressTab = tasksTabBar:addTab(tr('Progress'), tabPanels.progress)
   tasksTabBar:addTab(tr('Reward odds'), tabPanels.odds)
+
+  -- Catalog/Progress are pushed on-demand (not always-on like Offers/Active)
+  -- since a search result list and the season/streak/rankings text are only
+  -- worth the wire cost when the player actually opens that tab.
+  tasksTabBar.onTabChange = function(widget, tab)
+    if tab == progressTab then
+      sendTaskAction('progress')
+    elseif tab == catalogTab then
+      -- Always reopen Catalog in its clean state. Leaving a stale result list
+      -- from a previous visit sitting under an empty search box reads as "these
+      -- are your options" rather than "this is what you last searched for".
+      removeEvent(catalogSearchEvent)
+      tabPanels.catalog:getChildById('search'):setText('')
+      fillCatalog(lastChooseCost, {})
+    end
+  end
+
+  local searchEdit = tabPanels.catalog:getChildById('search')
+  searchEdit.onTextChange = function(widget, text)
+    -- Debounced, and an empty box clears LOCALLY rather than over the wire.
+    -- Both exist for the same root cause: handleTaskAction (server) throttles
+    -- every task action to one per 300ms, so fast typing/backspacing had its
+    -- LAST keystroke silently dropped. That's why deleting a short numeric
+    -- query ("12") left the old list on screen while a longer word ("dragon")
+    -- looked fine - the word's backspaces were just spread wider than 300ms.
+    removeEvent(catalogSearchEvent)
+    if text == '' then
+      fillCatalog(lastChooseCost, {})
+      return
+    end
+    catalogSearchEvent = scheduleEvent(function()
+      sendTaskAction('search,' .. text)
+    end, CATALOG_SEARCH_DEBOUNCE_MS)
+  end
+
+  local catalogList = tabPanels.catalog:getChildById('catalogList')
+  connect(catalogList, {
+    onChildFocusChange = function(self, focusedChild)
+      local chooseBtn = tabPanels.catalog:getChildById('chooseBtn')
+      if focusedChild and focusedChild.taskId then
+        chooseBtn:setEnabled(true)
+      else
+        chooseBtn:setEnabled(false)
+      end
+    end
+  })
+
+  tabPanels.catalog:getChildById('chooseBtn'):setEnabled(false)
+  tabPanels.catalog:getChildById('chooseBtn').onClick = function()
+    local focusedChild = catalogList:getFocusedChild()
+    if not focusedChild or not focusedChild.taskId then return end
+    local taskId, taskName = focusedChild.taskId, focusedChild.taskName
+
+    local box
+    local function cancel() box:destroy() end
+    local function confirm() sendTaskAction('choose,' .. taskId); box:destroy() end
+
+    box = displayGeneralBox(tr('Hand-pick task'),
+      tr('Hand-pick %s for %s gold?', taskName, goldText(lastChooseCost)), {
+      { text = tr('Yes'), callback = confirm },
+      { text = tr('No'), callback = cancel },
+      anchor = AnchorHorizontalCenter,
+    }, cancel, cancel)
+  end
 
   -- Empty state until the first push arrives (login, or manually forcing
   -- this module to load while already in-game won't have one yet - a relog
   -- triggers the push since it only fires from data/creaturescripts/scripts/
   -- login.lua today).
-  fillOffers(nil)
+  fillOffers(nil, nil)
   fillActive(nil)
   fillOdds()
+  fillCatalog(0, {})
+  fillProgress(nil)
 
   pcall(ProtocolGame.registerExtendedOpcode, TASKSTATE_OPCODE, onTaskStateOpcode)
+  pcall(ProtocolGame.registerExtendedOpcode, TASKCATALOG_OPCODE, onTaskCatalogOpcode)
+  pcall(ProtocolGame.registerExtendedOpcode, TASKPROGRESS_OPCODE, onTaskProgressOpcode)
 end
 
 function terminate()
   disconnect(g_game, { onGameEnd = offline })
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKSTATE_OPCODE)
+  pcall(ProtocolGame.unregisterExtendedOpcode, TASKCATALOG_OPCODE)
+  pcall(ProtocolGame.unregisterExtendedOpcode, TASKPROGRESS_OPCODE)
   if tasksButton then tasksButton:destroy() end
   if tasksWindow then tasksWindow:destroy() end
   tasksButton = nil
@@ -124,6 +326,20 @@ function toggle()
     tasksWindow:raise()
     tasksWindow:focus()
     tasksButton:setOn(true)
+    -- Progress data is fetched on demand (opcode 75), so reopening the window
+    -- with Progress ALREADY the selected tab would otherwise show whatever was
+    -- true last time it was opened - onTabChange never fires when the tab
+    -- doesn't actually change.
+    refreshCurrentTab()
+  end
+end
+
+-- Re-fetch whatever the visible tab needs. Offers/Active are server-pushed
+-- (opcode 72) and always current, so only Progress needs an explicit pull.
+function refreshCurrentTab()
+  if not tasksTabBar then return end
+  if tasksTabBar:getCurrentTab() == progressTab then
+    sendTaskAction('progress')
   end
 end
 
@@ -131,17 +347,25 @@ end
 -- Offers tab - offers is nil (nothing pushed yet) or a table keyed 1-5,
 -- any of which may itself be nil (that slot came back empty from the server).
 -- ============================================================================
-function fillOffers(offers)
+function fillOffers(offers, wishTask)
   local panel = tabPanels.offers
 
-  -- Wish of the Day/Grand Wish aren't in the opcode 72 payload yet (only the
-  -- 5 core offers + active task) - shown as a neutral not-yet-wired state
-  -- rather than a fake specific monster, so nothing here claims to be real
-  -- before it is. TODO: add these to the push once this tab needs them live.
+  -- Wish of the Day only (Grand Wish/weekly is a separate slot the payload
+  -- doesn't carry yet - TODO if this tab ever needs it live).
   local wish = panel:recursiveGetChildById('wishBanner')
-  wish:getChildById('label'):setText(tr('Wish of the day'))
-  wish:getChildById('name'):setText(tr('(not wired up yet)'))
-  wish:getChildById('accept'):setEnabled(false)
+  wish:getChildById('label'):setText(tr('Wish of the day - free'))
+  if wishTask then
+    wish:getChildById('name'):setText(('%s (Tier %d, kill %d, lvl %d+)'):format(
+      wishTask.name, wishTask.tier, wishTask.target, wishTask.minLevel))
+    local wishAccept = wish:getChildById('accept')
+    wishAccept:setEnabled(true)
+    wishAccept.onClick = function()
+      sendTaskAction('accept,' .. wishTask.id)
+    end
+  else
+    wish:getChildById('name'):setText(tr('No wish available'))
+    wish:getChildById('accept'):setEnabled(false)
+  end
 
   for i = 1, 5 do
     local slot = panel:recursiveGetChildById('slot' .. i)
@@ -149,13 +373,17 @@ function fillOffers(offers)
       local offer = offers and offers[i]
       local acceptBtn = slot:getChildById('accept')
       local rerollBtn = slot:getChildById('reroll')
+      local creature = slot:getChildById('creature')
       if offer then
         slot:getChildById('name'):setText(offer.name)
         slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
         slot:getChildById('info'):setText(('Tier %d - kill %d - lvl %d+'):format(offer.tier, offer.target, offer.minLevel))
-        rerollBtn:setText(tr('Reroll') .. ' ' .. (REROLL_COST_BY_TIER[offer.tier] or 0) .. 'g')
+        rerollBtn:setText(tr('Reroll') .. ' ' .. goldText(REROLL_COST_BY_TIER[offer.tier] or 0))
         acceptBtn:setEnabled(true)
         rerollBtn:setEnabled(true)
+        if offer.outfit and offer.outfit.type and offer.outfit.type > 0 then
+          creature:setOutfit(offer.outfit)
+        end
       else
         slot:getChildById('name'):setText(tr('No offer'))
         slot:getChildById('name'):setColor('#888888')
@@ -163,19 +391,22 @@ function fillOffers(offers)
         rerollBtn:setText(tr('Reroll'))
         acceptBtn:setEnabled(false)
         rerollBtn:setEnabled(false)
+        creature:setOutfit({type = 0})
       end
 
       rerollBtn.onClick = function()
-        -- TODO Phase B: send opcode(reroll, i) -> Tasks.rerollOffer
+        sendTaskAction('reroll,' .. i)
       end
       acceptBtn.onClick = function()
-        -- TODO Phase B: send opcode(accept, offers[i].id) -> Tasks.acceptTask
+        if offer then
+          sendTaskAction('accept,' .. offer.id)
+        end
       end
     end
   end
 
   panel:recursiveGetChildById('shuffle').onClick = function()
-    -- TODO Phase B: send opcode(shuffle) -> Tasks.shuffleOffers
+    sendTaskAction('shuffle')
   end
 end
 
@@ -185,30 +416,133 @@ end
 -- ============================================================================
 function fillActive(active)
   local panel = tabPanels.active
-  local dropBtn = panel:getChildById('drop')
+  -- Sprite/name/progressText/drop live inside the activeCard wrapper (matching
+  -- OfferSlot's card look), so these need a recursive lookup; the progress bar
+  -- sits outside it, but recursive finds a direct child too.
+  local dropBtn = panel:recursiveGetChildById('drop')
+  local creature = panel:recursiveGetChildById('creature')
+  local nameLabel = panel:recursiveGetChildById('name')
+  local progressTextLabel = panel:recursiveGetChildById('progressText')
+  local progressBar = panel:recursiveGetChildById('progress')
 
   if active then
-    panel:getChildById('name'):setText(active.name)
-    panel:getChildById('progressText'):setText(('%d / %d killed'):format(active.progress, active.target))
+    nameLabel:setText(active.name)
+    nameLabel:setColor('#dfdfdf')
+    progressTextLabel:setText(('%d / %d killed'):format(active.progress, active.target))
     local percent = 0
     if active.target > 0 then
       percent = math.min(100, math.floor(active.progress * 100 / active.target))
     end
-    panel:getChildById('progress'):setPercent(percent)
-    dropBtn:setEnabled(true)
+    progressBar:setPercent(percent)
+    progressBar:setVisible(true)
+    dropBtn:setVisible(true)
+    if active.outfit and active.outfit.type and active.outfit.type > 0 then
+      creature:setOutfit(active.outfit)
+    end
   else
-    panel:getChildById('name'):setText(tr('No active task'))
-    panel:getChildById('progressText'):setText('-')
-    panel:getChildById('progress'):setPercent(0)
-    dropBtn:setEnabled(false)
+    -- Empty state: HIDE the Drop button and the bar rather than showing a
+    -- disabled button next to an empty bar - both describe a task that does
+    -- not exist. The copy does the work instead, and points at the fix.
+    nameLabel:setText(tr('Faqir waits.'))
+    nameLabel:setColor('#FAC775')
+    progressTextLabel:setText(tr('Choose a hunt from the Offers tab to begin.'))
+    progressBar:setVisible(false)
+    dropBtn:setVisible(false)
+    creature:setOutfit({type = 0})
   end
 
-  -- TODO: not in the opcode 72 payload yet (warrior ladder milestone state) -
-  -- left blank rather than showing a fake number.
-  panel:getChildById('ladderTeaser'):setText('')
-
   dropBtn.onClick = function()
-    -- TODO Phase B: send opcode(drop) -> Tasks.dropTask
+    -- Mizo 2026-07-28: confirm before dropping - an accidental click loses an
+    -- in-progress task with no undo. UIMessageBox's own addButton() does NOT
+    -- auto-close on click (only :ok()/:cancel() do that) - every path here
+    -- (Yes/No/Escape/Enter) explicitly destroys the box itself.
+    -- Enter/Escape/No all cancel, never confirm, so an accidental keypress
+    -- can't do the destructive thing this dialog exists to prevent.
+    local box
+    local function cancel() box:destroy() end
+    local function confirm() sendTaskAction('drop'); box:destroy() end
+
+    box = displayGeneralBox(tr('Drop Task'), tr('Are you sure you want to drop this task?'), {
+      { text = tr('Yes'), callback = confirm },
+      { text = tr('No'), callback = cancel },
+      anchor = AnchorHorizontalCenter,
+    }, cancel, cancel)
+  end
+end
+
+-- ============================================================================
+-- Catalog tab - search any of the ~250 tasks by name/id and hand-pick one for
+-- gold (Tasks.chooseTask, same function/cost/gates as "!task choose <query>").
+-- matches is a table of {id, name, tier} - server caps it at 30.
+-- ============================================================================
+function fillCatalog(chooseCost, matches)
+  local panel = tabPanels.catalog
+  lastChooseCost = chooseCost
+  panel:getChildById('searchLabel'):setText(
+    tr('Search by name or id (hand-pick cost: %s gold)', goldText(chooseCost)))
+
+  local list = panel:getChildById('catalogList')
+  list:destroyChildren()
+
+  -- Empty state = ghosted skeleton rows. This client has no blur filter, so
+  -- "blurred" is faked the only way it can be: unreadable pseudo-names drawn
+  -- in a near-background grey, so the eye reads "content lives here" without
+  -- being able to read any of it. Non-focusable and carrying no taskId, so
+  -- they can never be selected or hand-picked by accident.
+  if #matches == 0 then
+    for _, ghost in ipairs(CATALOG_GHOST_ROWS) do
+      local row = g_ui.createWidget('TaskCatalogEntry', list)
+      row:setFocusable(false)
+      row:setColor('#33312c')
+      row:setText(ghost)
+    end
+  end
+
+  for _, task in ipairs(matches) do
+    local entry = g_ui.createWidget('TaskCatalogEntry', list)
+    entry:setText(('[%d] %s (Tier %d)'):format(task.id, task.name, task.tier))
+    entry:setColor(CATALOG_TIER_COLOR[task.tier] or '#dfdfdf')
+    entry.taskId = task.id
+    entry.taskName = task.name
+  end
+
+  panel:getChildById('chooseBtn'):setEnabled(false)
+end
+
+-- ============================================================================
+-- Progress tab - streak/weekly/season pass status + season rankings, pushed
+-- on-demand when the tab is opened (see init()'s onTabChange). data is nil
+-- before the first push (window just opened, tab not yet visited).
+-- ============================================================================
+function fillProgress(data)
+  local panel = tabPanels.progress
+
+  if not data then
+    panel:getChildById('streakLabel'):setText(tr('Streak'))
+    panel:getChildById('weeklyLabel'):setText(tr('Weekly challenge'))
+    panel:getChildById('weeklyProgress'):setPercent(0)
+    panel:getChildById('passLabel'):setText(tr('Season pass'))
+    panel:getChildById('rankingsList'):destroyChildren()
+    return
+  end
+
+  panel:getChildById('streakLabel'):setText(data.streakText)
+  panel:getChildById('weeklyLabel'):setText(data.weeklyText)
+  local percent = 0
+  if data.weeklyTarget > 0 then
+    percent = math.min(100, math.floor(data.weeklyCount * 100 / data.weeklyTarget))
+  end
+  panel:getChildById('weeklyProgress'):setPercent(percent)
+  panel:getChildById('passLabel'):setText(data.passText)
+
+  local rankingsList = panel:getChildById('rankingsList')
+  rankingsList:destroyChildren()
+  for line in (data.rankingText .. '\n'):gmatch('(.-)\n') do
+    if line ~= '' then
+      local entry = g_ui.createWidget('TaskCatalogEntry', rankingsList)
+      entry:setFocusable(false)
+      entry:setText(line)
+    end
   end
 end
 

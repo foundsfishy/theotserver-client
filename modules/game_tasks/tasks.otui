@@ -25,48 +25,61 @@ OfferSlot < Panel
   border-width: 1
   border-color: #4a453e
   padding: 6
+  margin-bottom: 4
 
+  // Three columns: sprite (left) | text (middle) | stacked buttons (right).
+  // The buttons used to sit along the bottom edge and overlapped the taller
+  // sprite; moving them into their own right-hand column frees the full slot
+  // height for the creature and lets the text breathe between them.
+  // margin-top compensates for the engine drawing the outfit low inside the
+  // widget rect (creatures are drawn standing, so a sprite smaller than the
+  // 64x64 box leaves its empty space at the TOP and reads as sitting low).
   UICreature
     id: creature
     phantom: true
-    size: 40 40
-    anchors.top: parent.top
+    size: 64 64
+    anchors.verticalCenter: parent.verticalCenter
     anchors.left: parent.left
-    image-source: /images/ui/panel_flat
-    image-border: 1
+    margin-top: -6
+
+  TaskButton
+    id: accept
+    !text: tr('Accept')
+    width: 84
+    anchors.bottom: parent.verticalCenter
+    margin-bottom: 3
+    anchors.right: parent.right
+
+  TaskButton
+    id: reroll
+    !text: tr('Reroll')
+    width: 84
+    anchors.top: parent.verticalCenter
+    margin-top: 3
+    anchors.right: parent.right
 
   Label
     id: name
     font: verdana-11px-rounded
-    anchors.top: parent.top
-    anchors.left: prev.right
-    anchors.right: parent.right
-    margin-left: 8
+    anchors.bottom: parent.verticalCenter
+    anchors.left: creature.right
+    anchors.right: accept.left
+    margin-left: 18
+    margin-right: 8
+    margin-bottom: 2
     text: -
 
   Label
     id: info
     font: verdana-11px-rounded
     color: #aaaaaa
-    anchors.top: prev.bottom
-    anchors.left: prev.left
-    anchors.right: parent.right
+    anchors.top: parent.verticalCenter
+    anchors.left: creature.right
+    anchors.right: reroll.left
+    margin-left: 18
+    margin-right: 8
+    margin-top: 1
     text: -
-
-  TaskButton
-    id: accept
-    !text: tr('Accept')
-    width: 70
-    anchors.bottom: parent.bottom
-    anchors.left: parent.left
-
-  TaskButton
-    id: reroll
-    !text: tr('Reroll')
-    width: 90
-    anchors.bottom: parent.bottom
-    anchors.left: prev.right
-    margin-left: 6
 
 WishBanner < Panel
   height: 40
@@ -101,9 +114,27 @@ WishBanner < Panel
     anchors.right: parent.right
 
 TasksOffersPanel < Panel
+  padding-top: 8
+
+  // Shuffle is a FIXED footer, deliberately outside the ScrollablePanel. As the
+  // last child of the scrolling list it only appeared after scrolling past all
+  // five offers - an action that applies to the whole list should never be
+  // something you have to go looking for.
+  TaskButton
+    id: shuffle
+    !text: tr('Shuffle all - 150K gold')
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+
   ScrollablePanel
     id: offersScroll
-    anchors.fill: parent
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: shuffle.top
+    margin-right: 16
+    margin-bottom: 8
     vertical-scrollbar: offersScrollBar
     layout: verticalBox
 
@@ -121,10 +152,6 @@ TasksOffersPanel < Panel
     OfferSlot
       id: slot5
 
-    TaskButton
-      id: shuffle
-      !text: tr('Shuffle all - 75000 gold')
-
   VerticalScrollBar
     id: offersScrollBar
     anchors.top: offersScroll.top
@@ -134,62 +161,102 @@ TasksOffersPanel < Panel
     pixels-scroll: true
 
 TasksActivePanel < Panel
-  UICreature
-    id: creature
-    phantom: true
-    size: 48 48
+  padding-top: 8
+
+  // Card is a straight mirror of OfferSlot: same height/fill/border/padding,
+  // 64x64 unframed sprite left with the same -6 draw-offset compensation, the
+  // two text lines straddling the vertical midline with the same 18/8 side
+  // margins and 2/1 midline gap, action button right on the midline.
+  Panel
+    id: activeCard
+    height: 90
+    background-color: #1a1a1a
+    border-width: 1
+    border-color: #4a453e
+    padding: 6
     anchors.top: parent.top
     anchors.left: parent.left
-    image-source: /images/ui/panel_flat
-    image-border: 1
-
-  Label
-    id: name
-    font: verdana-11px-rounded
-    anchors.top: parent.top
-    anchors.left: prev.right
     anchors.right: parent.right
-    margin-left: 10
-    text: No active task
 
-  Label
-    id: progressText
-    font: verdana-11px-rounded
-    color: #aaaaaa
-    anchors.top: prev.bottom
-    anchors.left: prev.left
-    anchors.right: parent.right
-    text: -
+    UICreature
+      id: creature
+      phantom: true
+      size: 64 64
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.left: parent.left
+      margin-top: -6
 
+    TaskButton
+      id: drop
+      !text: tr('Drop Task')
+      width: 84
+      anchors.verticalCenter: parent.verticalCenter
+      anchors.right: parent.right
+      margin-right: 24
+
+    Label
+      id: name
+      font: verdana-11px-rounded
+      anchors.bottom: parent.verticalCenter
+      anchors.left: creature.right
+      anchors.right: drop.left
+      margin-left: 18
+      margin-right: 8
+      margin-bottom: 2
+      text: No active task
+
+    Label
+      id: progressText
+      font: verdana-11px-rounded
+      color: #aaaaaa
+      anchors.top: parent.verticalCenter
+      anchors.left: creature.right
+      anchors.right: drop.left
+      margin-left: 18
+      margin-right: 8
+      margin-top: 1
+      text: -
+
+  // Full width UNDER the card, not inside it - inside, it had to squeeze into
+  // the middle column between sprite and button, which fought the two-line
+  // centering the offers layout is built on.
   ProgressBar
     id: progress
-    background-color: green
-    height: 8
+    background-color: #639922
+    height: 16
     anchors.top: prev.bottom
     margin-top: 10
     anchors.left: parent.left
     anchors.right: parent.right
     phantom: false
 
-  Label
-    id: ladderTeaser
-    font: verdana-11px-rounded
-    color: #aaaaaa
-    anchors.top: prev.bottom
-    margin-top: 10
-    anchors.left: parent.left
-    anchors.right: parent.right
-    text-wrap: true
-    text: -
 
-  TaskButton
-    id: drop
-    !text: tr('Drop task')
-    anchors.bottom: parent.bottom
-    anchors.right: parent.right
-    width: 90
+// This client has NO text-outline property (checked every .otui + style file),
+// so readability against the list's mid-grey background comes from a heavier
+// antialiased font plus the brightened CATALOG_TIER_COLOR palette in tasks.lua
+// - the Offers-tab tier colors are tuned for a near-black panel and go muddy
+// here. Row height is up from 18 to give the taller font room to breathe.
+TaskCatalogEntry < Label
+  height: 20
+  focusable: true
+  font: verdana-11px-antialised
+  color: #dfdfdf
+  text-offset: 4 3
+  background-color: alpha
+
+  // Deliberately NO color override here - each row's tier color is applied
+  // per-row via setColor() in fillCatalog, and a color: in this state block
+  // would win over it, flattening every tier to one shade on selection.
+  // Only the background changes to show focus.
+  $focus:
+    background-color: #4a453e
+
+  $!focus:
+    background-color: alpha
 
 TasksCatalogPanel < Panel
+  padding-top: 8
+
   Label
     id: searchLabel
     font: verdana-11px-rounded
@@ -199,21 +266,33 @@ TasksCatalogPanel < Panel
     anchors.right: parent.right
     text: Search by name or id
 
+  Label
+    id: searchHint
+    font: verdana-11px-rounded
+    color: #888888
+    anchors.top: prev.bottom
+    margin-top: 3
+    anchors.left: parent.left
+    anchors.right: parent.right
+    text: Type below to search all tasks by name or id.
+
   TextEdit
     id: search
-    !tooltip: tr('Search 248 tasks by name or id')
+    !tooltip: tr('Search tasks by monster name, task name or task id')
+    placeholder: Start typing a monster name or task id...
+    placeholder-color: #EF9F27
     anchors.top: prev.bottom
-    margin-top: 2
+    margin-top: 8
     anchors.left: parent.left
     anchors.right: parent.right
 
   TextList
     id: catalogList
     anchors.top: prev.bottom
-    margin-top: 6
+    margin-top: 12
     anchors.left: parent.left
     anchors.right: parent.right
-    anchors.bottom: parent.bottom
+    height: 240
     focusable: false
     vertical-scrollbar: catalogListScrollBar
 
@@ -225,7 +304,17 @@ TasksCatalogPanel < Panel
     step: 14
     pixels-scroll: true
 
+  TaskButton
+    id: chooseBtn
+    !text: tr('Hand-pick selected task')
+    anchors.top: catalogList.bottom
+    margin-top: 12
+    anchors.left: parent.left
+    anchors.right: parent.right
+
 TasksHuntPanel < Panel
+  padding-top: 8
+
   Label
     id: huntStatus
     font: verdana-11px-rounded
@@ -238,7 +327,7 @@ TasksHuntPanel < Panel
   ProgressBar
     id: huntProgress
     background-color: #E24B4A
-    height: 8
+    height: 16
     anchors.top: prev.bottom
     margin-top: 10
     anchors.left: parent.left
@@ -262,6 +351,8 @@ TasksHuntPanel < Panel
     width: 110
 
 TasksProgressPanel < Panel
+  padding-top: 8
+
   Label
     id: streakLabel
     font: verdana-11px-rounded
@@ -295,7 +386,7 @@ TasksProgressPanel < Panel
   ProgressBar
     id: weeklyProgress
     background-color: #378ADD
-    height: 8
+    height: 16
     anchors.top: prev.bottom
     margin-top: 4
     anchors.left: parent.left
@@ -367,7 +458,7 @@ OddsRow < Panel
   ProgressBar
     id: sigilBar
     background-color: #EF9F27
-    height: 6
+    height: 16
     anchors.top: prev.bottom
     margin-top: 3
     anchors.left: parent.left
@@ -375,6 +466,7 @@ OddsRow < Panel
     phantom: false
 
 TasksOddsPanel < Panel
+  padding-top: 8
   layout: verticalBox
 
   OddsRow
