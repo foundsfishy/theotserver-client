@@ -103,6 +103,41 @@ InventoryButton < Button
   size: 45 18
   text-offset: 2 2
 
+TaskBarButton < UIButton
+  height: 26
+  text-align: left
+  font: verdana-11px-monochrome
+  color: white
+  text-offset: 55 3
+  image-source: /images/ui/button
+  image-color: #dfdfdf
+  image-clip: 0 0 22 23
+  image-border: 3
+  padding: 5 8 5 8
+  border-width: 2
+  border-color: #FFD700
+  change-cursor-image: true
+  cursor: pointer
+
+  $hover !disabled:
+    image-clip: 0 23 22 23
+
+  $pressed:
+    image-clip: 0 46 22 23
+    text-offset: 55 4
+
+  $disabled:
+    color: #dfdfdf88
+    change-cursor-image: false
+
+  UIItem
+    id: icon
+    anchors.left: parent.left
+    anchors.verticalCenter: parent.verticalCenter
+    margin-left: 21
+    size: 22 22
+    phantom: true
+
 SoulCapLabel < GameLabel
   text-align: center
   color: #FFFFFF
@@ -132,7 +167,7 @@ AutoLootBox < CombatBox
 
 InventoryWindow < HeadlessMiniWindow
   icon: /images/topbuttons/inventory
-  height: 198
+  height: 214
   id: inventoryWindow
   @onClose: modules.game_inventory.onMiniWindowClose()
   &save: true
@@ -175,8 +210,9 @@ InventoryWindow < HeadlessMiniWindow
       id: inventoryPanel
       margin-right: 63
       margin-top: 2
+      margin-bottom: 32
       anchors.fill: parent
-      
+
       HeadSlot
         anchors.top: parent.top
         anchors.horizontalCenter: parent.horizontalCenter
@@ -260,9 +296,10 @@ InventoryWindow < HeadlessMiniWindow
         
     Panel
       margin-top: 5
+      margin-bottom: 32
       anchors.fill: parent
       anchors.left: prev.right
-        
+
       FightOffensiveBox
         id: fightOffensiveBox
         anchors.left: parent.left
@@ -339,4 +376,14 @@ InventoryWindow < HeadlessMiniWindow
         InventoryButton
           !text: tr('Logout')
           @onClick: modules.game_interface.tryLogout()
+
+    TaskBarButton
+      id: tasksBarButton
+      !text: tr("Faqir's Tasks")
+      anchors.left: parent.left
+      anchors.right: parent.right
+      anchors.bottom: parent.bottom
+      margin-left: 2
+      margin-right: 2
+      margin-bottom: 6
 

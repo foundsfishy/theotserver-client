@@ -194,12 +194,40 @@ function onTaskProgressOpcode(protocol, opcode, buffer)
   })
 end
 
-function init()
-  connect(g_game, { onGameEnd = offline })
+-- The lamp icon is set here rather than once in init(). init() runs at the
+-- login screen, before any game connection - item sprites are tied to the
+-- connected game version and aren't loaded yet, so setItemId() at boot
+-- silently resolves to nothing (confirmed 2026-07-29: only a Ctrl+Shift+R
+-- reloadModules() while already online made it appear, since that reruns
+-- init() with sprite data present). Same class of bug game_inventory.lua's
+-- own onGameStart=refresh hook exists to avoid; game_tasks just never had it.
+function setTaskIcon()
+  if not tasksButton then return end
+  -- Gemmed lamp is server item 2344 - the client renders by CLIENT id
+  -- (items.otb clientid for 2344 is 3231). Passing the server id here
+  -- silently shows nothing; see reference_client_vs_server_item_ids memory.
+  tasksButton:getChildById('icon'):setItemId(3231)
+end
 
-  tasksButton = modules.client_topmenu.addRightGameToggleButton(
-    'tasksButton', tr("Faqir's Tasks"), '/images/topbuttons/questlog', toggle)
-  tasksButton:setOn(false)
+function init()
+  connect(g_game, { onGameStart = setTaskIcon, onGameEnd = offline })
+
+  -- Lives inside the equipment (inventory) window's layout, not the topmenu -
+  -- Mizo 2026-07-29 wanted it wide, under the equipment slots, filling that
+  -- panel's width. The widget itself is declared in the retro layout's
+  -- 40-inventory.otui (TaskBarButton/tasksBarButton) alongside that window's
+  -- other buttons (Stop/Options/Hotkeys/Logout); this module only wires it up.
+  -- Only the retro layout's 40-inventory.otui defines tasksBarButton; other
+  -- layouts (mobile) don't have it, so this is a soft no-op there rather than
+  -- a nil-index crash on init.
+  tasksButton = modules.game_inventory.inventoryWindow:recursiveGetChildById('tasksBarButton')
+  if tasksButton then
+    tasksButton.onClick = toggle
+    tasksButton:setOn(false)
+    if g_game.isOnline() then
+      setTaskIcon()
+    end
+  end
 
   g_ui.importStyle('tasks')
   tasksWindow = g_ui.createWidget('TasksWindow', rootWidget)
@@ -216,11 +244,11 @@ function init()
   tabPanels.odds     = g_ui.createWidget('TasksOddsPanel')
 
   tasksTabBar:addTab(tr('Offers'), tabPanels.offers)
-  tasksTabBar:addTab(tr('Active task'), tabPanels.active)
+  tasksTabBar:addTab(tr('Active Task'), tabPanels.active)
   catalogTab = tasksTabBar:addTab(tr('Catalog'), tabPanels.catalog)
   tasksTabBar:addTab(tr('Hunt'), tabPanels.hunt)
   progressTab = tasksTabBar:addTab(tr('Progress'), tabPanels.progress)
-  tasksTabBar:addTab(tr('Reward odds'), tabPanels.odds)
+  tasksTabBar:addTab(tr('Reward Odds'), tabPanels.odds)
 
   -- Catalog/Progress are pushed on-demand (not always-on like Offers/Active)
   -- since a search result list and the season/streak/rankings text are only
@@ -302,11 +330,16 @@ function init()
 end
 
 function terminate()
-  disconnect(g_game, { onGameEnd = offline })
+  disconnect(g_game, { onGameStart = setTaskIcon, onGameEnd = offline })
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKSTATE_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKCATALOG_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKPROGRESS_OPCODE)
-  if tasksButton then tasksButton:destroy() end
+  -- tasksButton lives in game_inventory's static layout, not created here -
+  -- unwire it rather than destroying someone else's widget.
+  if tasksButton then
+    tasksButton.onClick = nil
+    tasksButton:setOn(false)
+  end
   if tasksWindow then tasksWindow:destroy() end
   tasksButton = nil
   tasksWindow = nil
@@ -353,7 +386,7 @@ function fillOffers(offers, wishTask)
   -- Wish of the Day only (Grand Wish/weekly is a separate slot the payload
   -- doesn't carry yet - TODO if this tab ever needs it live).
   local wish = panel:recursiveGetChildById('wishBanner')
-  wish:getChildById('label'):setText(tr('Wish of the day - free'))
+  wish:getChildById('label'):setText(tr('Wish of the day - Free'))
   if wishTask then
     wish:getChildById('name'):setText(('%s (Tier %d, kill %d, lvl %d+)'):format(
       wishTask.name, wishTask.tier, wishTask.target, wishTask.minLevel))
@@ -414,18 +447,66 @@ end
 -- Active task tab - active is nil (no task, or nothing pushed yet) or
 -- {id, name, progress, target}.
 -- ============================================================================
+-- Faqir the Wise's real outfit (data/npc/Faqir the Wise.xml on the server) -
+-- outfits aren't remapped server/client like item ids are, so this look type
+-- is safe to pass straight to setOutfit().
+local FAQIR_OUTFIT = { type = 103, head = 20, body = 30, legs = 40, feet = 50, addons = 0 }
+local FAQIR_MATERIALIZE_MS = 500
+local FAQIR_SIZE = 128
+local FAQIR_START_SIZE = 48
+
+-- No real warp/dissolve shader is available here (this client's outfit
+-- shaders only expose a scroll-offset uniform the engine drives itself, not
+-- a generic per-frame uniform Lua can animate, and this is a compiled client
+-- with no C++ source to add one) - this fakes "materializing" out of the
+-- lamp with a fade + grow tween instead, reusing corelib's g_effects.fadeIn
+-- for opacity and hand-rolling the same step pattern for size.
+local function materializeFaqir(creature)
+  removeEvent(creature.materializeEvent)
+  creature:setOpacity(0)
+  creature:setSize({width = FAQIR_START_SIZE, height = FAQIR_START_SIZE})
+  g_effects.fadeIn(creature, FAQIR_MATERIALIZE_MS)
+
+  local function step(elapsed)
+    local t = math.min(elapsed / FAQIR_MATERIALIZE_MS, 1)
+    local size = FAQIR_START_SIZE + math.floor((FAQIR_SIZE - FAQIR_START_SIZE) * t)
+    creature:setSize({width = size, height = size})
+    if t < 1 then
+      creature.materializeEvent = scheduleEvent(function() step(elapsed + 30) end, 30)
+    else
+      creature.materializeEvent = nil
+    end
+  end
+  step(0)
+end
+
+-- Only replay the materialize animation on the ACTUAL transition into the
+-- empty state, not every opcode 72 push while it's already showing (the
+-- server can re-send state for unrelated reasons - the window shouldn't
+-- restart the animation every time that happens while the player is just
+-- sitting on the tab).
+local wasShowingEmptyState = nil
+
 function fillActive(active)
   local panel = tabPanels.active
   -- Sprite/name/progressText/drop live inside the activeCard wrapper (matching
   -- OfferSlot's card look), so these need a recursive lookup; the progress bar
   -- sits outside it, but recursive finds a direct child too.
+  local activeCard = panel:getChildById('activeCard')
   local dropBtn = panel:recursiveGetChildById('drop')
   local creature = panel:recursiveGetChildById('creature')
   local nameLabel = panel:recursiveGetChildById('name')
   local progressTextLabel = panel:recursiveGetChildById('progressText')
   local progressBar = panel:recursiveGetChildById('progress')
+  local faqirBubble = panel:getChildById('faqirBubble')
+  local faqirCreature = panel:getChildById('faqirCreature')
 
   if active then
+    wasShowingEmptyState = false
+    activeCard:setVisible(true)
+    faqirBubble:setVisible(false)
+    faqirCreature:setVisible(false)
+
     nameLabel:setText(active.name)
     nameLabel:setColor('#dfdfdf')
     progressTextLabel:setText(('%d / %d killed'):format(active.progress, active.target))
@@ -440,15 +521,23 @@ function fillActive(active)
       creature:setOutfit(active.outfit)
     end
   else
-    -- Empty state: HIDE the Drop button and the bar rather than showing a
-    -- disabled button next to an empty bar - both describe a task that does
-    -- not exist. The copy does the work instead, and points at the fix.
-    nameLabel:setText(tr('Faqir waits.'))
-    nameLabel:setColor('#FAC775')
-    progressTextLabel:setText(tr('Choose a hunt from the Offers tab to begin.'))
+    -- Empty state: the card (and its Drop button/bar) disappears entirely
+    -- rather than showing a disabled button next to an empty bar - both
+    -- described a task that doesn't exist. Faqir himself, big, with a
+    -- speech bubble carrying the message, fills that space instead.
+    activeCard:setVisible(false)
     progressBar:setVisible(false)
-    dropBtn:setVisible(false)
-    creature:setOutfit({type = 0})
+
+    faqirBubble:setVisible(true)
+    faqirCreature:setVisible(true)
+    faqirBubble:getChildById('faqirBubbleTitle'):setText(tr('Faqir waits.'))
+    faqirBubble:getChildById('faqirBubbleText'):setText(tr('Choose a hunt from offers.'))
+    faqirCreature:setOutfit(FAQIR_OUTFIT)
+
+    if wasShowingEmptyState ~= true then
+      materializeFaqir(faqirCreature)
+    end
+    wasShowingEmptyState = true
   end
 
   dropBtn.onClick = function()
@@ -535,13 +624,19 @@ function fillProgress(data)
   panel:getChildById('weeklyProgress'):setPercent(percent)
   panel:getChildById('passLabel'):setText(data.passText)
 
+  local RANK_COLOR = { [1] = '#FFD700', [2] = '#C0C0C0', [3] = '#CD7F32' } -- gold/silver/bronze
   local rankingsList = panel:getChildById('rankingsList')
   rankingsList:destroyChildren()
+  local rank = 0
   for line in (data.rankingText .. '\n'):gmatch('(.-)\n') do
     if line ~= '' then
+      rank = rank + 1
       local entry = g_ui.createWidget('TaskCatalogEntry', rankingsList)
       entry:setFocusable(false)
       entry:setText(line)
+      if RANK_COLOR[rank] then
+        entry:setColor(RANK_COLOR[rank])
+      end
     end
   end
 end

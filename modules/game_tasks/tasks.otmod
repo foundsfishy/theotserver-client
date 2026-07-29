@@ -4,6 +4,6 @@ Module
   author: TheOtServer
   sandboxed: true
   scripts: [ tasks ]
-  dependencies: [ client_topmenu ]
+  dependencies: [ client_topmenu, game_inventory ]
   @onLoad: init()
   @onUnload: terminate()

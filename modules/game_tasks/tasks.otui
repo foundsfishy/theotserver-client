@@ -1,23 +1,43 @@
 TasksTabBar < TabBar
 TasksTabBarPanel < TabBarPanel
 TasksTabBarButton < TabBarButton
-  size: 90 25
+  // The Offers/Catalog lists reserve their rightmost 16px for the vertical
+  // scrollbar (see offersScroll/catalogList margin-right:16), so the card
+  // itself actually ends at 388 (window content width) - 16 = 372, not the
+  // full 388. 6 equal tabs + 5 equal gaps sized to land there instead:
+  // 6*60+5*2=370, so the last tab's right edge lines up with where the
+  // scrollbar starts, not past it.
+  size: 60 25
   font: verdana-11px-rounded
   text-offset: 0 2
 
   $!first:
     anchors.left: prev.right
-    margin-left: 0
+    margin-left: 4
 
   $hover !checked:
     color: #ffffff
 
   $checked:
     color: #ffffff
+    image-color: #EF9F27
 
 TaskButton < Button
   height: 21
   font: verdana-11px-rounded
+
+// Themed to match WishBanner's own palette (background #2a1e08, border/label
+// #EF9F27/#FAC775) so its Accept button reads as part of that banner rather
+// than a generic grey button dropped on top of it.
+WishAcceptButton < TaskButton
+  image-color: #EF9F27
+  color: white
+
+  $hover !disabled:
+    image-color: #FAC775
+
+  $pressed:
+    image-color: #c97f1c
 
 OfferSlot < Panel
   height: 90
@@ -41,6 +61,7 @@ OfferSlot < Panel
     anchors.verticalCenter: parent.verticalCenter
     anchors.left: parent.left
     margin-top: -6
+    margin-left: 13
 
   TaskButton
     id: accept
@@ -87,7 +108,7 @@ WishBanner < Panel
   border-width: 1
   border-color: #EF9F27
   padding: 6
-  margin-bottom: 6
+  margin-bottom: 14
 
   Label
     id: label
@@ -106,7 +127,7 @@ WishBanner < Panel
     anchors.left: parent.left
     text: -
 
-  TaskButton
+  WishAcceptButton
     id: accept
     !text: tr('Accept')
     width: 70
@@ -185,6 +206,7 @@ TasksActivePanel < Panel
       anchors.verticalCenter: parent.verticalCenter
       anchors.left: parent.left
       margin-top: -6
+      margin-left: 13
 
     TaskButton
       id: drop
@@ -207,8 +229,11 @@ TasksActivePanel < Panel
 
     Label
       id: progressText
-      font: verdana-11px-rounded
-      color: #aaaaaa
+      font: verdana-11px-monochrome
+      color: #dfdfdf
+      text-wrap: true
+      multi-line: true
+      height: 30
       anchors.top: parent.verticalCenter
       anchors.left: creature.right
       anchors.right: drop.left
@@ -229,6 +254,53 @@ TasksActivePanel < Panel
     anchors.left: parent.left
     anchors.right: parent.right
     phantom: false
+
+  // Empty-state only: activeCard hides entirely (see fillActive) and this
+  // big Faqir + speech bubble fills the space instead, rather than a small
+  // placeholder line in the card. No dedicated speech-bubble art exists in
+  // this client (checked - nothing under data/images), so the bubble is a
+  // plain WishBanner-style panel above his head, not a pointed-tail shape.
+  Panel
+    id: faqirBubble
+    width: 280
+    height: 50
+    background-color: #2a1e08
+    border-width: 1
+    border-color: #EF9F27
+    padding: 8
+    anchors.bottom: faqirCreature.top
+    margin-bottom: 6
+    anchors.horizontalCenter: parent.horizontalCenter
+
+    Label
+      id: faqirBubbleTitle
+      font: verdana-11px-rounded
+      color: #FAC775
+      width: 264
+      height: 14
+      anchors.top: parent.top
+      anchors.left: parent.left
+      text: -
+
+    Label
+      id: faqirBubbleText
+      font: verdana-11px-monochrome
+      color: #dfdfdf
+      text-wrap: true
+      multi-line: true
+      width: 264
+      height: 26
+      anchors.top: prev.bottom
+      anchors.left: parent.left
+      text: -
+
+  UICreature
+    id: faqirCreature
+    phantom: true
+    size: 128 128
+    anchors.verticalCenter: parent.verticalCenter
+    margin-top: 11
+    anchors.horizontalCenter: parent.horizontalCenter
 
 
 // This client has NO text-outline property (checked every .otui + style file),
@@ -259,8 +331,8 @@ TasksCatalogPanel < Panel
 
   Label
     id: searchLabel
-    font: verdana-11px-rounded
-    color: #aaaaaa
+    font: verdana-11px-monochrome
+    color: #dfdfdf
     anchors.top: parent.top
     anchors.left: parent.left
     anchors.right: parent.right
@@ -268,8 +340,8 @@ TasksCatalogPanel < Panel
 
   Label
     id: searchHint
-    font: verdana-11px-rounded
-    color: #888888
+    font: verdana-11px-monochrome
+    color: #dfdfdf
     anchors.top: prev.bottom
     margin-top: 3
     anchors.left: parent.left
@@ -280,9 +352,9 @@ TasksCatalogPanel < Panel
     id: search
     !tooltip: tr('Search tasks by monster name, task name or task id')
     placeholder: Start typing a monster name or task id...
-    placeholder-color: #EF9F27
+    placeholder-color: #FFD700
     anchors.top: prev.bottom
-    margin-top: 8
+    margin-top: 16
     anchors.left: parent.left
     anchors.right: parent.right
 
@@ -355,8 +427,8 @@ TasksProgressPanel < Panel
 
   Label
     id: streakLabel
-    font: verdana-11px-rounded
-    color: #aaaaaa
+    font: verdana-11px-monochrome
+    color: #dfdfdf
     anchors.top: parent.top
     anchors.left: parent.left
     anchors.right: parent.right
@@ -375,8 +447,8 @@ TasksProgressPanel < Panel
 
   Label
     id: weeklyLabel
-    font: verdana-11px-rounded
-    color: #aaaaaa
+    font: verdana-11px-monochrome
+    color: #dfdfdf
     anchors.top: prev.bottom
     margin-top: 12
     anchors.left: parent.left
@@ -395,8 +467,8 @@ TasksProgressPanel < Panel
 
   Label
     id: passLabel
-    font: verdana-11px-rounded
-    color: #aaaaaa
+    font: verdana-11px-monochrome
+    color: #dfdfdf
     anchors.top: prev.bottom
     margin-top: 12
     anchors.left: parent.left
@@ -416,8 +488,8 @@ TasksProgressPanel < Panel
 
   Label
     id: rankingsLabel
-    font: verdana-11px-rounded
-    color: #aaaaaa
+    font: verdana-11px-monochrome
+    color: #dfdfdf
     anchors.top: prev.bottom
     margin-top: 12
     anchors.left: parent.left
