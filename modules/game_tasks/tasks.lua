@@ -38,6 +38,52 @@ local CATALOG_SEARCH_DEBOUNCE_MS = 350
 local catalogSearchEvent = nil
 
 local REROLL_COST_BY_TIER = { [1] = 20000, [2] = 40000, [3] = 60000, [4] = 80000, [5] = 100000 }
+
+-- Which active task id has already played its full "just accepted" sequence
+-- (blink-then-move) in the Offers tab - guards against replaying it on the
+-- per-kill state pushes that follow while that same task is running.
+local lastFlashedActiveId = nil
+-- Which active task id has a blink-then-move IN PROGRESS. A kill can land
+-- (and push a fresh opcode 72 state) mid-blink, before the deferred move has
+-- fired - without this guard that re-entrant fillOffers call would see the
+-- row not yet at top and try to move it AGAIN mid-animation. While pending,
+-- fillOffers skips both re-flashing and re-moving; the row's text/colour
+-- still update normally every push, only the position is held.
+local pendingMoveActiveId = nil
+
+-- Sixth attempt at this indicator (Mizo 2026-07-30 x6):
+--   1. a 1px border flash alone - too subtle, easy to miss.
+--   2. a blinking "^ MOVED UP" text badge alone - ugly ASCII chrome.
+--   3. prey_star.png alone, fading in/hold/out - too brief, too small.
+--   4. star + border glow together - landed, then a slide-to-top travel
+--      effect was requested, built, and then explicitly removed again.
+--   5. "^ MOVED UP" badge back, blinking in sync with the border.
+-- This version drops the separate corner badge entirely: the Accept button
+-- itself (already repurposed into the live kill counter for the active row -
+-- see fillOffers) shows "^ MOVED UP" for the WHOLE blink duration instead,
+-- then switches to the real counter the instant the blink ends (not waiting
+-- for the next kill to land, which could otherwise leave stale text sitting
+-- there for a while). Border still reverts to normal explicitly at the end.
+local FLASH_BLINKS = 3
+local FLASH_STEP_MS = 220
+local GLOW_BORDER = '#FAC775'
+local NORMAL_BORDER = '#4a453e'
+
+local function flashActiveOffer(slot, onDone)
+  removeEvent(slot.flashEvent)
+  local total = FLASH_BLINKS * 2
+  local function step(n)
+    if n > total then
+      slot:setBorderColor(NORMAL_BORDER)
+      if onDone then onDone() end
+      return
+    end
+    slot:setBorderColor(n % 2 == 1 and GLOW_BORDER or NORMAL_BORDER)
+    slot.flashEvent = scheduleEvent(function() step(n + 1) end, FLASH_STEP_MS)
+  end
+  step(1)
+end
+
 local SIGIL_CHANCE_BY_TIER = { [1] = 40, [2] = 18, [3] = 40, [4] = 15, [5] = 5 }
 local TIER_COLOR = {
   [1] = '#639922', [2] = '#378ADD', [3] = '#7F77DD', [4] = '#EF9F27', [5] = '#E24B4A',
@@ -52,15 +98,19 @@ local TIER_COLOR = {
 -- plausible length, tier suffix) so the empty list reads as ghosted content
 -- rather than a blank grey box. Fixed list, not randomised: a skeleton that
 -- reshuffles every keystroke draws the eye instead of receding.
+-- Shaped like a REAL catalog row (id, plausible name, tier/kill/level suffix)
+-- so the empty list reads as ghosted content. Kept in step with the live row
+-- format - when rows gained "- kill N - lvl N+" these did too, otherwise the
+-- skeleton is visibly shorter than what replaces it and the list jumps.
 local CATALOG_GHOST_ROWS = {
-  '[--] Nnnrrmm Vhaalk (Tier -)',
-  '[--] Skrenn (Tier -)',
-  '[--] Ghorrum Slaath (Tier -)',
-  '[--] Vaelmirr Dhun (Tier -)',
-  '[--] Prakk (Tier -)',
-  '[--] Ithreneth Corr (Tier -)',
-  '[--] Mmurgash (Tier -)',
-  '[--] Xhalvinn Traak (Tier -)',
+  '[--] Nnnrrmm Vhaalk (Tier - - kill -- - lvl --+)',
+  '[--] Skrenn (Tier - - kill -- - lvl --+)',
+  '[--] Ghorrum Slaath (Tier - - kill -- - lvl --+)',
+  '[--] Vaelmirr Dhun (Tier - - kill -- - lvl --+)',
+  '[--] Prakk (Tier - - kill -- - lvl --+)',
+  '[--] Ithreneth Corr (Tier - - kill -- - lvl --+)',
+  '[--] Mmurgash (Tier - - kill -- - lvl --+)',
+  '[--] Xhalvinn Traak (Tier - - kill -- - lvl --+)',
 }
 
 local CATALOG_TIER_COLOR = {
@@ -150,11 +200,21 @@ function onTaskStateOpcode(protocol, opcode, buffer)
     end
   end
 
-  fillOffers(offers, wish)
+  -- active is passed to fillOffers too: the accepted task STAYS in the offer
+  -- slots (Tasks.acceptTask never clears them), so Offers needs to know which
+  -- row is the one being worked.
+  fillOffers(offers, wish, active)
   fillActive(active)
 end
 
--- "<chooseCost>|<id>,<name>,<tier>;..." (empty after the '|' if no matches).
+-- "<chooseCost>|<id>,<name>,<tier>,<target>,<minLevel>;..." (empty after the
+-- '|' if no matches).
+--
+-- Parsed tolerantly: the 5-field shape (with kill count + level) is what the
+-- server sends since 2026-07-29, but the old 3-field shape is still accepted so
+-- this client keeps working against a server that has not been deployed yet.
+-- Without that fallback the whole tab would silently blank against an older
+-- server, which is the exact failure mode the "3.0" float bug had.
 function onTaskCatalogOpcode(protocol, opcode, buffer)
   local costStr, matchesStr = buffer:match('^(%d+)|(.*)$')
   if not costStr then return end
@@ -162,9 +222,16 @@ function onTaskCatalogOpcode(protocol, opcode, buffer)
   local matches = {}
   if matchesStr ~= '' then
     for entry in (matchesStr .. ';'):gmatch('(.-);') do
-      local id, name, tier = entry:match('^(%d+),(.-),(%d+)$')
+      local id, name, tier, target, minLevel =
+        entry:match('^(%d+),(.-),(%d+),(%d+),(%d+)$')
+      if not id then
+        id, name, tier = entry:match('^(%d+),(.-),(%d+)$')
+      end
       if id then
-        matches[#matches + 1] = { id = tonumber(id), name = name, tier = tonumber(tier) }
+        matches[#matches + 1] = {
+          id = tonumber(id), name = name, tier = tonumber(tier),
+          target = tonumber(target), minLevel = tonumber(minLevel),
+        }
       end
     end
   end
@@ -398,6 +465,12 @@ end
 function offline()
   if tasksWindow then tasksWindow:hide() end
   if tasksButton then tasksButton:setOn(false) end
+  -- lastFlashedActiveId is deliberately NOT reset here. Module-local Lua state
+  -- survives a plain logout/login within the same client process, so leaving
+  -- it means a task that was already active before logout does not flash
+  -- again after login. Only a genuinely fresh client launch clears it (Lua
+  -- state resets), which at worst flashes once for an already-active task on
+  -- first window open - harmless, and not worth extra state to prevent.
 end
 
 function toggle()
@@ -430,8 +503,15 @@ end
 -- Offers tab - offers is nil (nothing pushed yet) or a table keyed 1-5,
 -- any of which may itself be nil (that slot came back empty from the server).
 -- ============================================================================
-function fillOffers(offers, wishTask)
+function fillOffers(offers, wishTask, active)
   local panel = tabPanels.offers
+  local hasActive = active ~= nil
+  -- Computed BEFORE the slot loop (not inside the post-loop reorder block,
+  -- which runs after this text is already set) so the accept button shows
+  -- "MOVED UP" from the very first render of a fresh accept, not one push
+  -- late. True for every push while the blink-then-move sequence is either
+  -- about to start or already running for this task id.
+  local isFreshAccept = hasActive and lastFlashedActiveId ~= active.id
 
   -- Wish of the Day only (Grand Wish/weekly is a separate slot the payload
   -- doesn't carry yet - TODO if this tab ever needs it live).
@@ -441,7 +521,9 @@ function fillOffers(offers, wishTask)
     wish:getChildById('name'):setText(('%s (Tier %d, kill %d, lvl %d+)'):format(
       wishTask.name, wishTask.tier, wishTask.target, wishTask.minLevel))
     local wishAccept = wish:getChildById('accept')
-    wishAccept:setEnabled(true)
+    -- The engine refuses any accept while a task is running, so the Wish's
+    -- Accept is disabled too rather than left to fail with an error message.
+    wishAccept:setEnabled(not hasActive)
     wishAccept.onClick = function()
       sendTaskAction('accept,' .. wishTask.id)
     end
@@ -450,6 +532,8 @@ function fillOffers(offers, wishTask)
     wish:getChildById('accept'):setEnabled(false)
   end
 
+  local activeSlotWidget = nil
+
   for i = 1, 5 do
     local slot = panel:recursiveGetChildById('slot' .. i)
     if slot then
@@ -457,27 +541,83 @@ function fillOffers(offers, wishTask)
       local acceptBtn = slot:getChildById('accept')
       local rerollBtn = slot:getChildById('reroll')
       local creature = slot:getChildById('creature')
+      local isActiveOffer = offer and active and offer.id == active.id
+      if isActiveOffer then activeSlotWidget = slot end
       if offer then
-        slot:getChildById('name'):setText(offer.name)
-        slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
+        slot:getChildById('name'):setText(
+          offer.name .. (isActiveOffer and '  [ACTIVE]' or ''))
         slot:getChildById('info'):setText(('Tier %d - kill %d - lvl %d+'):format(offer.tier, offer.target, offer.minLevel))
         rerollBtn:setText(tr('Reroll') .. ' ' .. goldText(REROLL_COST_BY_TIER[offer.tier] or 0))
-        acceptBtn:setEnabled(true)
-        rerollBtn:setEnabled(true)
+        -- Disabled while a task runs (Mizo 2026-07-29, reversing the earlier
+        -- confirm-dialog approach): rerolling the active task's own slot
+        -- orphans it out of the offer list entirely, and nothing else in the
+        -- tab marks it as still running once that happens - five dead grey
+        -- rows with no explanation. Disabling this (and Shuffle, below) makes
+        -- Offers fully read-only while hunting, so that state can never occur.
+        rerollBtn:setEnabled(not hasActive)
+
+        -- State is carried by CONTRAST, not by a new colour: with a task
+        -- running the other rows dim and this one stays at full brightness.
+        -- Deliberately not "tint the accepted row green" - Tier 1 already IS
+        -- green (#639922), so a green state marker would be indistinguishable
+        -- from tier language on exactly the rows most likely to be accepted.
+        if isActiveOffer then
+          slot:setOpacity(1.0)
+          slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
+          slot:getChildById('info'):setColor('#aaaaaa')
+          -- The Accept button here can never work (the engine refuses a second
+          -- accept), and it is the biggest element in the row - so it becomes
+          -- the live kill count instead of dead disabled chrome. Updates on
+          -- every kill for free, since opcode 72 already pushes per-kill.
+          -- During the blink-then-move sequence it shows "^ MOVED UP" instead -
+          -- see flashActiveOffer's onDone, which switches it to the counter
+          -- the instant the blink ends rather than waiting on the next kill.
+          if isFreshAccept then
+            acceptBtn:setText(tr('^ MOVED UP'))
+          else
+            acceptBtn:setText(('%d / %d'):format(active.progress, active.target))
+          end
+          acceptBtn:setEnabled(false)
+        else
+          -- Dim BOTH ways on purpose: setOpacity is not verified to cascade to
+          -- child widgets in this client (no C++ source here to check), so the
+          -- de-emphasis is also applied as explicit colours. If opacity does
+          -- cascade the row just dims a little further; if it does not, the
+          -- contrast still lands. Never rely on the opacity alone.
+          slot:setOpacity(hasActive and 0.45 or 1.0)
+          if hasActive then
+            slot:getChildById('name'):setColor('#5a5a5a')
+            slot:getChildById('info'):setColor('#4a4a4a')
+          else
+            slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
+            slot:getChildById('info'):setColor('#aaaaaa')
+          end
+          acceptBtn:setText(tr('Accept'))
+          -- Disabled while a task runs because the ENGINE refuses it - leaving
+          -- it clickable meant five live buttons that all failed with
+          -- "You already have an active task."
+          acceptBtn:setEnabled(not hasActive)
+        end
+
         if offer.outfit and offer.outfit.type and offer.outfit.type > 0 then
           creature:setOutfit(offer.outfit)
         end
       else
+        slot:setOpacity(1.0)
+        acceptBtn:setText(tr('Accept'))
         slot:getChildById('name'):setText(tr('No offer'))
         slot:getChildById('name'):setColor('#888888')
         slot:getChildById('info'):setText('-')
         rerollBtn:setText(tr('Reroll'))
         acceptBtn:setEnabled(false)
-        rerollBtn:setEnabled(false)
+        rerollBtn:setEnabled(false) -- already disabled: an empty slot has nothing to reroll
         creature:setOutfit({type = 0})
       end
 
       rerollBtn.onClick = function()
+        -- Reroll is disabled above whenever hasActive, so this can only fire
+        -- with no task running - no confirm needed, nothing here can orphan
+        -- the active task out of the offer list.
         sendTaskAction('reroll,' .. i)
       end
       acceptBtn.onClick = function()
@@ -488,7 +628,57 @@ function fillOffers(offers, wishTask)
     end
   end
 
-  panel:recursiveGetChildById('shuffle').onClick = function()
+  -- Accepting a task should not leave it buried wherever it happened to be
+  -- offered - it moves to the top of the list (right under the Wish banner)
+  -- via moveChildToIndex (the same reordering API game_actionbar and the
+  -- console log already use inside a box layout - children under
+  -- layout:verticalBox cannot carry their own anchors in this engine, so a
+  -- true position TWEEN would fight the list's own reflow every frame; a
+  -- ghost-panel slide effect was tried and built, then removed at Mizo's
+  -- request 2026-07-30 - keep the move a plain instant reorder). The move
+  -- itself is DEFERRED until after the glow+star plays at the row's original
+  -- spot (see flashActiveOffer above) - moving it in the same instant as the
+  -- click meant the indicator only ever appeared after the row had already
+  -- jumped, which read as no indicator at all.
+  local offersScroll = panel:getChildById('offersScroll')
+  if activeSlotWidget and offersScroll then
+    local id = active.id
+    if lastFlashedActiveId == id then
+      -- Sequence already finished on an earlier push - keep it pinned at top
+      -- on every subsequent state push (a later fillOffers call could
+      -- otherwise leave it wherever the server slot array put it).
+      offersScroll:moveChildToIndex(activeSlotWidget, offersScroll:getChildIndex(wish) + 1)
+    elseif pendingMoveActiveId ~= id then
+      -- Brand new accept: glow in place first, THEN move.
+      pendingMoveActiveId = id
+      flashActiveOffer(activeSlotWidget, function()
+        offersScroll:moveChildToIndex(activeSlotWidget, offersScroll:getChildIndex(wish) + 1)
+        pendingMoveActiveId = nil
+        lastFlashedActiveId = id
+        -- Switch the counter on immediately rather than waiting for the next
+        -- opcode 72 push (the next kill could be a while away) - the button
+        -- would otherwise keep reading "^ MOVED UP" long after it stopped
+        -- being true.
+        local acceptBtn = activeSlotWidget:getChildById('accept')
+        if acceptBtn then
+          acceptBtn:setText(('%d / %d'):format(active.progress, active.target))
+        end
+      end)
+    end
+    -- else: glow already in progress for this id - a kill landed mid-sequence
+    -- and re-pushed state. Do nothing here; the scheduled callback above will
+    -- still fire and move it once, at the original time.
+  else
+    lastFlashedActiveId = nil
+    pendingMoveActiveId = nil
+  end
+
+  local shuffleBtn = panel:recursiveGetChildById('shuffle')
+  -- Disabled while a task runs, same reasoning as Reroll above: shuffle
+  -- replaces ALL five offers, always including the active task's, so leaving
+  -- it live would orphan the active task out of the list every time.
+  shuffleBtn:setEnabled(not hasActive)
+  shuffleBtn.onClick = function()
     sendTaskAction('shuffle')
   end
 end
@@ -581,7 +771,7 @@ function fillActive(active)
     faqirBubble:setVisible(true)
     faqirCreature:setVisible(true)
     faqirBubble:getChildById('faqirBubbleTitle'):setText(tr('Faqir waits.'))
-    faqirBubble:getChildById('faqirBubbleText'):setText(tr('Choose a hunt from offers.'))
+    faqirBubble:getChildById('faqirBubbleText'):setText(tr('Choose a task from the offers Tab.'))
     faqirCreature:setOutfit(FAQIR_OUTFIT)
 
     if wasShowingEmptyState ~= true then
@@ -639,7 +829,17 @@ function fillCatalog(chooseCost, matches)
 
   for _, task in ipairs(matches) do
     local entry = g_ui.createWidget('TaskCatalogEntry', list)
-    entry:setText(('[%d] %s (Tier %d)'):format(task.id, task.name, task.tier))
+    -- Show the kill count and level gate, phrased the same way the Offers tab
+    -- phrases them ("Tier N - kill X - lvl Y+"), so a hand-picked task reads
+    -- identically to an offered one. task.target is the LEVEL-SCALED count the
+    -- server computed for this player, not a generic base number. Falls back to
+    -- the old name-only row if talking to a server that doesn't send them yet.
+    if task.target and task.minLevel then
+      entry:setText(('[%d] %s (Tier %d - kill %d - lvl %d+)'):format(
+        task.id, task.name, task.tier, task.target, task.minLevel))
+    else
+      entry:setText(('[%d] %s (Tier %d)'):format(task.id, task.name, task.tier))
+    end
     entry:setColor(CATALOG_TIER_COLOR[task.tier] or '#dfdfdf')
     entry.taskId = task.id
     entry.taskName = task.name

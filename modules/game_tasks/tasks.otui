@@ -61,6 +61,12 @@ OfferSlot < Panel
     margin-top: -6
     margin-left: 13
 
+  // The "^ MOVED UP" indicator lives on the accept button itself now (see
+  // fillOffers/flashActiveOffer in tasks.lua) rather than a separate corner
+  // badge - ASCII only, this client's font atlases have no real arrow glyph
+  // and player-facing text stays ASCII project-wide, so a caret stands in
+  // for an up-arrow rather than a unicode triangle that could render blank.
+
   TaskButton
     id: accept
     !text: tr('Accept')
