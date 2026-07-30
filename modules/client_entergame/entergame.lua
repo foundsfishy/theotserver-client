@@ -1,5 +1,13 @@
 EnterGame = { }
 
+-- Consecutive wrong-password/account streak this client session. The server bans an
+-- IP after 5 in 10 minutes (see ARCHITECTURE.md sec 11, theotserver-login fail2ban
+-- jail) with NO way for it to tell the client why once banned - a ban drops packets
+-- at the firewall, before the game process ever sees the connection, so there is no
+-- "you are banned" message possible at that point. This warns proactively, while the
+-- attempts are still reaching the server and getting a real answer back.
+local failedLoginStreak = 0
+
 -- Brand ONLY login / front-door message boxes (Login Error, Connecting, etc).
 -- In-game message boxes never call this, so they stay stock grey.
 -- Re-applies the gold MessageBoxWindow frame + gold pill buttons. MessageBoxWindow
@@ -34,6 +42,7 @@ function brandLoginBox(box)
         if children[1] then
           holder:setWidth(total)
           holder:setHeight(children[1]:getHeight())
+          holder:addAnchor(AnchorHorizontalCenter, 'parent', AnchorHorizontalCenter)
         end
       end
     end)
@@ -74,6 +83,7 @@ local function onSessionKey(protocol, sessionKey)
 end
 
 local function onCharacterList(protocol, characters, account, otui)
+  failedLoginStreak = 0
   if rememberPasswordBox:isChecked() then
     local account = g_crypt.encrypt(G.account)
     local password = g_crypt.encrypt(G.password)
@@ -726,9 +736,20 @@ function EnterGame.onLoginError(err)
     loadBox:destroy()
     loadBox = nil
   end
+  local isBadCredentials = err:lower():find("invalid") or err:lower():find("not correct") or err:lower():find("or password")
+  if isBadCredentials then
+    failedLoginStreak = failedLoginStreak + 1
+    -- Server bans at 5 wrong tries / 10 min (fail2ban); warn a couple tries before
+    -- that point instead of letting the player hit an unexplained "connecting..."
+    -- hang once actually banned - there is no way to message them AFTER that (see
+    -- the module-level comment above failedLoginStreak).
+    if failedLoginStreak >= 3 then
+      err = err .. "\n\n" .. tr("Warning: too many wrong attempts in a row may temporarily\nlock out your connection for a few minutes. If you're not\nsure of your password, use the account recovery option\ninstead of guessing.")
+    end
+  end
   local errorBox = brandLoginBox(displayErrorBox(tr('Login Error'), err))
   errorBox.onOk = EnterGame.show
-  if err:lower():find("invalid") or err:lower():find("not correct") or err:lower():find("or password") then
+  if isBadCredentials then
     EnterGame.clearAccountFields()
   end
 end
