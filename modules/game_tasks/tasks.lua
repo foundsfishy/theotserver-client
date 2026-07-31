@@ -681,6 +681,19 @@ function fillOffers(offers, wishTask, active)
   shuffleBtn.onClick = function()
     sendTaskAction('shuffle')
   end
+
+  -- Legacy warrior weapon-ladder opt-in. Disabled while a task runs for the
+  -- same reason Accept is: the server refuses to start a second task anyway,
+  -- so a live button would only ever produce an error line. Everything else
+  -- (vocation, level, whether a rung is actually owed) is re-checked server
+  -- side in Tasks.startLadderOptIn, which answers with a plain refusal.
+  local ladderBtn = panel:recursiveGetChildById('ladder')
+  if ladderBtn then
+    ladderBtn:setEnabled(not hasActive)
+    ladderBtn.onClick = function()
+      sendTaskAction('ladder')
+    end
+  end
 end
 
 -- ============================================================================
