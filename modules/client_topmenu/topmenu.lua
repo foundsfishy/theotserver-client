@@ -55,7 +55,7 @@ function init()
 
   topMenu = g_ui.createWidget('TopMenu', g_ui.getRootWidget())  
   do
-    local openDiscord = function() g_platform.openUrl('https://discord.gg/nQNESJms6') end
+    local openDiscord = function() g_platform.openUrl('https://discord.gg/JCMnNNYsGq') end
     if topMenu.discord then topMenu.discord.onClick = openDiscord end
     if topMenu.discordLabel then topMenu.discordLabel.onClick = openDiscord end
   end
