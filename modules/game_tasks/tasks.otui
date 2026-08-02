@@ -145,31 +145,12 @@ TasksOffersPanel < Panel
   // last child of the scrolling list it only appeared after scrolling past all
   // five offers - an action that applies to the whole list should never be
   // something you have to go looking for.
-  // Legacy warrior weapon-ladder opt-in (2026-07-31). Warriors who predate the
-  // ladder no longer get its rungs force-assigned, so this is how they claim
-  // them from the window instead of having to talk to Faqir or type !task list.
-  // Always visible rather than shown-only-when-owed: knowing whether a rung is
-  // owed needs a new field in the opcode 72 payload, and every segment of that
-  // payload ends in a greedy match - appending one would blank the Active tab
-  // on any client that had not updated yet. The server answers a click with a
-  // plain refusal line when it does not apply, so an unnecessary click is
-  // cheap. Fold the "only show when owed" version into Phase 3, which is
-  // extending this payload anyway.
-  TaskButton
-    id: ladder
-    !text: tr('Warrior weapon ladder')
-    !tooltip: tr('Claim weapon rewards from the warrior ladder. Warriors only.')
-    anchors.bottom: parent.bottom
-    anchors.left: parent.left
-    anchors.right: parent.right
-
   TaskButton
     id: shuffle
     !text: tr('Shuffle all - 150K gold')
-    anchors.bottom: ladder.top
+    anchors.bottom: parent.bottom
     anchors.left: parent.left
     anchors.right: parent.right
-    margin-bottom: 4
 
   ScrollablePanel
     id: offersScroll
