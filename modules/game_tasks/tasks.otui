@@ -603,10 +603,16 @@ MarksText < Label
   text-wrap: true
   multi-line: true
   height: 30
+  margin-top: 4
   margin-bottom: 2
 
+// margin-top 4 is what separates the first assassin row from the kris art's
+// blade-tip line above it - the art lines themselves carry no bottom margin
+// (they must butt together to read as one drawing), so the row supplies the
+// gap from its own side.
 MarksDaggerRow < Panel
   height: 36
+  margin-top: 4
   margin-bottom: 2
 
   UICreature
