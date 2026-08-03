@@ -35,6 +35,10 @@ local progressTab = nil
 -- all rather than seeing a permanently-empty one.
 local marksTab = nil
 local marksTabDefaultColor = nil
+-- Slow red pulse on the Marks tab label while daggers exist (Mizo's
+-- "could pulse/highlight"). One event at a time; stopped whenever the
+-- dagger count hits zero and in terminate() before the tab widget dies.
+local marksTabPulseEvent = nil
 
 -- Last parsed opcode 72 state (v1 or v2, normalised into one table) - kept so
 -- tab switches can re-render gates/greys without waiting for the next push.
@@ -596,6 +600,10 @@ function terminate()
     tasksButton.onClick = nil
     tasksButton:setOn(false)
   end
+  -- Pulse event first, THEN the window: the tab widget dies with the window
+  -- and a still-scheduled pulse tick would poke a destroyed widget.
+  removeEvent(marksTabPulseEvent)
+  marksTabPulseEvent = nil
   if tasksWindow then tasksWindow:destroy() end
   tasksButton = nil
   tasksWindow = nil
@@ -614,6 +622,11 @@ function offline()
   -- starts back at v1 until the window is opened again - the hello must be
   -- re-sent then.
   v2HelloSent = false
+  -- No connection, no daggers - stop the tab pulse rather than letting it
+  -- blink at the character-select screen until the next login's push.
+  removeEvent(marksTabPulseEvent)
+  marksTabPulseEvent = nil
+  if marksTab and marksTabDefaultColor then marksTab:setColor(marksTabDefaultColor) end
   lastState = nil
   currentActiveIds = {}
   -- flashedActiveIds is deliberately NOT reset here. Module-local Lua state
@@ -1120,9 +1133,30 @@ function fillMarks(s)
   local daggers = s.daggers or {}
   local contract = s.contract
 
-  -- Tab label highlights while daggers exist - red enough to pull the eye to
-  -- the tab from anywhere in the window.
-  marksTab:setColor(#daggers > 0 and MARKS_RED or marksTabDefaultColor)
+  -- Tab label carries the dagger count and pulses red while any exist -
+  -- enough to pull the eye from anywhere in the window without opening the
+  -- tab. layoutTabs() re-fits the row since the label just changed width.
+  -- The pulse is a slow 700ms breathe, not the accept-flash's fast blink -
+  -- this is a standing condition, not a one-shot event. $checked overrides
+  -- color while the tab is selected, which is fine: whoever is ON the tab
+  -- is already looking at the daggers.
+  removeEvent(marksTabPulseEvent)
+  marksTabPulseEvent = nil
+  if #daggers > 0 then
+    marksTab:setText(('%s (%d)'):format(tr('Marks'), #daggers))
+    marksTab:setColor(MARKS_RED)
+    local lit = true
+    local function pulse()
+      lit = not lit
+      marksTab:setColor(lit and MARKS_RED or marksTabDefaultColor)
+      marksTabPulseEvent = scheduleEvent(pulse, 700)
+    end
+    marksTabPulseEvent = scheduleEvent(pulse, 700)
+  else
+    marksTab:setText(tr('Marks'))
+    marksTab:setColor(marksTabDefaultColor)
+  end
+  layoutTabs()
 
   -- PvP/Hunt level gate (Mizo final call: level 100 itself is still
   -- protected). The client reads its OWN level and only greys the controls -

@@ -193,8 +193,11 @@ TasksOffersPanel < Panel
 // border, padding, 64x64 sprite left), but the progress bar moves INSIDE
 // along the bottom edge: with up to three cards stacked there is no single
 // "under the card" spot for a shared full-width bar anymore.
+// 108 rather than a rounder 112: the tab content area under the tab bar is
+// 369px, and three stacked cards (max slots) plus the wallet readout must
+// fit it with slack - 3*(108+6) + wallet line = ~356.
 ActiveTaskCard < Panel
-  height: 112
+  height: 108
   background-color: #1a1a1a
   border-width: 1
   border-color: #4a453e
@@ -280,7 +283,10 @@ TasksActivePanel < Panel
     visible: false
     text: -
 
-  TaskButton
+  // WishAcceptButton, not a plain TaskButton: the gold treatment is the
+  // window's existing "this one is special" accent (the Wish banner), and
+  // this is the one button that leads to the shop.
+  WishAcceptButton
     id: unlockSlots
     !text: tr('Unlock extra slots?')
     !tooltip: tr('Buy an extra task slot in the website shop')
@@ -576,11 +582,13 @@ TasksOddsPanel < Panel
 
 // terminus-10px is the ONLY fixed-glyph-width font in data/fonts
 // (fixed-glyph-width: 6) - the kris contract art is column-aligned ASCII and
-// falls apart in any proportional face. Height 11 packs the art lines tight
-// enough to read as one drawing instead of a spaced-out list.
+// falls apart in any proportional face. Height matches the font's declared
+// 12px exactly (terminus-10px.otfont says height: 12 - anything tighter
+// clips the bottom glyph row) so the art lines butt together and read as
+// one drawing instead of a spaced-out list.
 MarksLine < Label
   font: terminus-10px
-  height: 11
+  height: 12
   color: #d8c8a0
 
 MarksHeader < Label
@@ -639,12 +647,16 @@ MarksPoster < Panel
     margin-top: -6
     margin-left: 13
 
+  // sans-bold-16px (20px tall) rather than the window's verdana-11px: this
+  // line IS the poster - it should shout the way a real wanted bill does,
+  // and it's the only place in the window that earns display type.
   Label
     id: wantedHeader
-    font: verdana-11px-rounded
+    font: sans-bold-16px
     color: #E24B4A
+    height: 20
     anchors.top: parent.top
-    margin-top: 12
+    margin-top: 8
     anchors.left: creature.right
     anchors.right: parent.right
     margin-left: 18
@@ -655,7 +667,7 @@ MarksPoster < Panel
     font: verdana-11px-rounded
     color: #66CC66
     anchors.top: prev.bottom
-    margin-top: 6
+    margin-top: 8
     anchors.left: creature.right
     anchors.right: parent.right
     margin-left: 18
