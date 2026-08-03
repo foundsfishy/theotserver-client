@@ -14,6 +14,13 @@
 -- weekly/season pass/rankings, opcode 75) are pushed ON-DEMAND when their
 -- tab is opened/typed in, not always-on like Offers/Active. Hunt tab is
 -- still a static placeholder.
+-- PHASE D (payload v2): on first window open per connection the client sends
+-- a "hello:v2" handshake over opcode 73; a v2 server answers every later
+-- opcode 72 push for that session in the v2 shape (leading "v2|"). This file
+-- parses BOTH shapes forever, and every v2-only widget (multi-slot actives,
+-- Marks tab, wallet readout, unlock-slots button) hides itself whenever only
+-- v1 data is available - deploy order between client and server never
+-- matters, in either direction.
 
 tasksWindow = nil
 tasksButton = nil
@@ -23,6 +30,22 @@ local tabPanels = {}
 -- is showing without re-deriving it from the tab bar's children.
 local catalogTab = nil
 local progressTab = nil
+-- Marks tab (Faqir's Dagger) is CREATED LAZILY on the first v2 state push -
+-- a v1 session never has dagger/contract data, so it never sees the tab at
+-- all rather than seeing a permanently-empty one.
+local marksTab = nil
+local marksTabDefaultColor = nil
+
+-- Last parsed opcode 72 state (v1 or v2, normalised into one table) - kept so
+-- tab switches can re-render gates/greys without waiting for the next push.
+local lastState = nil
+-- Set of task ids currently being hunted - drives the Offers [ACTIVE] rows,
+-- the catalog greying and accept gating, refreshed on every state push.
+local currentActiveIds = {}
+-- One v2 handshake per connection: sent on first window open, reset in
+-- offline(). Sent from toggle() rather than onGameStart so a server that
+-- logs opcodes at login isn't spammed by players who never open the window.
+local v2HelloSent = false
 
 -- Real numbers from data/lib/tasks.lua (2026-07-27 reroll retier). These are
 -- server-wide constants (not per-player), so showing them directly here -
@@ -39,17 +62,19 @@ local catalogSearchEvent = nil
 
 local REROLL_COST_BY_TIER = { [1] = 20000, [2] = 40000, [3] = 60000, [4] = 80000, [5] = 100000 }
 
--- Which active task id has already played its full "just accepted" sequence
--- (blink-then-move) in the Offers tab - guards against replaying it on the
--- per-kill state pushes that follow while that same task is running.
-local lastFlashedActiveId = nil
--- Which active task id has a blink-then-move IN PROGRESS. A kill can land
--- (and push a fresh opcode 72 state) mid-blink, before the deferred move has
--- fired - without this guard that re-entrant fillOffers call would see the
--- row not yet at top and try to move it AGAIN mid-animation. While pending,
--- fillOffers skips both re-flashing and re-moving; the row's text/colour
--- still update normally every push, only the position is held.
-local pendingMoveActiveId = nil
+-- Which active task ids have already played their full "just accepted"
+-- sequence (blink-then-move) in the Offers tab - guards against replaying it
+-- on the per-kill state pushes that follow while those tasks are running.
+-- Sets keyed by task id rather than single ids: payload v2 allows up to
+-- three actives at once, each with its own animation lifecycle.
+local flashedActiveIds = {}
+-- Active task ids whose blink-then-move is IN PROGRESS. A kill can land (and
+-- push a fresh opcode 72 state) mid-blink, before the deferred move has fired
+-- - without this guard that re-entrant fillOffers call would see the row not
+-- yet at top and try to move it AGAIN mid-animation. While pending, fillOffers
+-- skips both re-flashing and re-moving; the row's text/colour still update
+-- normally every push, only the position is held.
+local pendingMoveIds = {}
 
 -- Sixth attempt at this indicator (Mizo 2026-07-30 x6):
 --   1. a 1px border flash alone - too subtle, easy to miss.
@@ -150,6 +175,13 @@ local function sendTaskAction(payload)
   protocol:sendExtendedOpcode(TASKACTION_OPCODE, payload)
 end
 
+local function parseOutfit(lookType, head, body, legs, feet, addons)
+  return {
+    type = tonumber(lookType), head = tonumber(head), body = tonumber(body),
+    legs = tonumber(legs), feet = tonumber(feet), addons = tonumber(addons),
+  }
+end
+
 -- Shared shape used by an offer AND the Wish of the Day - both are just "a
 -- task", so both parse the same 11-field entry:
 -- "<id>,<name>,<tier>,<target>,<minLevel>,<lookType>,<head>,<body>,<legs>,
@@ -162,49 +194,152 @@ local function parseTaskEntry(entry)
   return {
     id = tonumber(id), name = name, tier = tonumber(tier),
     target = tonumber(target), minLevel = tonumber(minLevel),
-    outfit = {
-      type = tonumber(lookType), head = tonumber(head), body = tonumber(body),
-      legs = tonumber(legs), feet = tonumber(feet), addons = tonumber(addons),
-    },
+    outfit = parseOutfit(lookType, head, body, legs, feet, addons),
   }
 end
 
--- "<offer entry>;...(x5, '-1' if empty)|<wish entry, or -1>|<active>". active
--- is "none" or "<id>,<name>,<progress>,<target>,<lookType>,<head>,<body>,
--- <legs>,<feet>,<addons>".
-function onTaskStateOpcode(protocol, opcode, buffer)
-  local offersStr, wishStr, activeStr = buffer:match('^(.-)|(.-)|(.*)$')
-  if not offersStr then return end
+-- The v1 active-task shape; also each entry of the v2 active list.
+-- "<id>,<name>,<progress>,<target>,<lookType>,<head>,<body>,<legs>,<feet>,
+-- <addons>". Returns nil for 'none'/empty/malformed.
+local function parseActiveEntry(entry)
+  if not entry or entry == '' or entry == 'none' then return nil end
+  local id, name, progress, target, lookType, head, body, legs, feet, addons =
+    entry:match('^(%d+),(.-),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)$')
+  if not id then return nil end
+  return {
+    id = tonumber(id), name = name, progress = tonumber(progress), target = tonumber(target),
+    outfit = parseOutfit(lookType, head, body, legs, feet, addons),
+  }
+end
 
+local function parseOffersSegment(offersStr)
   local offers = {}
   local slot = 0
   for entry in (offersStr .. ';'):gmatch('(.-);') do
     slot = slot + 1
     offers[slot] = parseTaskEntry(entry)
   end
+  return offers
+end
 
-  local wish = parseTaskEntry(wishStr)
+-- v2 payload, sent by the server only after this client's hello:v2 handshake:
+--
+--   v2|slots:<1-3>|<active;active;... or none>|<offers as v1>|<wish or -1>
+--     |gear:<0/1>|wallet:<minutes>,<cap>
+--     |daggers:<n>[,<name>,<level>,<lookType>,<head>,<body>,<legs>,<feet>,<addons>]*
+--     |contract:<name>,<level>,<lookType>,<head>,<body>,<legs>,<feet>,<addons> or -
+--     |shopoffer:<taskslots offer id>
+--
+-- Parsed segment-by-segment on '|': labelled segments are recognised by their
+-- "word:" prefix and UNKNOWN labels are ignored outright, so the server may
+-- append fields freely - the exact extension trap the v1 payload's greedy
+-- tail match had. The three unlabelled segments are taken positionally as
+-- active list, offers, wish (task names never start with "letters:", so the
+-- two kinds can't collide). Dagger/contract entries tolerate ';' between
+-- entries too - normalised to ',' before the positional field walk.
+local function parseV2State(buffer)
+  local s = { v2 = true, slots = 1, activeList = {}, offers = {}, daggers = {} }
 
-  local active = nil
-  if activeStr and activeStr ~= 'none' then
-    local id, name, progress, target, lookType, head, body, legs, feet, addons =
-      activeStr:match('^(%d+),(.-),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)$')
-    if id then
-      active = {
-        id = tonumber(id), name = name, progress = tonumber(progress), target = tonumber(target),
-        outfit = {
-          type = tonumber(lookType), head = tonumber(head), body = tonumber(body),
-          legs = tonumber(legs), feet = tonumber(feet), addons = tonumber(addons),
-        },
-      }
+  local segments = {}
+  for seg in (buffer .. '|'):gmatch('(.-)|') do
+    segments[#segments + 1] = seg
+  end
+
+  local unlabeled = {}
+  for i = 2, #segments do -- segments[1] is the 'v2' marker itself
+    local seg = segments[i]
+    local label, rest = seg:match('^(%a+):(.*)$')
+    if label == 'slots' then
+      s.slots = math.max(1, math.min(3, tonumber(rest) or 1))
+    elseif label == 'gear' then
+      s.gear = rest == '1'
+    elseif label == 'wallet' then
+      local minutes, cap = rest:match('^(%d+),(%d+)')
+      if minutes then
+        s.walletMinutes, s.walletCap = tonumber(minutes), tonumber(cap)
+      end
+    elseif label == 'daggers' then
+      local flat = rest:gsub(';', ',')
+      local count = tonumber(flat:match('^(%d+)')) or 0
+      local entriesStr = flat:match('^%d+,(.*)$') or ''
+      for name, level, lookType, head, body, legs, feet, addons in
+          entriesStr:gmatch('([^,]+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)') do
+        if #s.daggers < count then
+          s.daggers[#s.daggers + 1] = {
+            name = name, level = tonumber(level),
+            outfit = parseOutfit(lookType, head, body, legs, feet, addons),
+          }
+        end
+      end
+    elseif label == 'contract' then
+      if rest ~= '' and rest ~= '-' then
+        local flat = rest:gsub(';', ',')
+        local name, level, lookType, head, body, legs, feet, addons =
+          flat:match('^([^,]+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)$')
+        if name then
+          s.contract = {
+            name = name, level = tonumber(level),
+            outfit = parseOutfit(lookType, head, body, legs, feet, addons),
+          }
+        end
+      end
+    elseif label == 'shopoffer' then
+      if rest ~= '' and rest ~= '-' then s.shopoffer = rest end
+    elseif not label then
+      unlabeled[#unlabeled + 1] = seg
     end
   end
 
-  -- active is passed to fillOffers too: the accepted task STAYS in the offer
+  local activeStr = unlabeled[1]
+  if activeStr and activeStr ~= 'none' and activeStr ~= '' then
+    for entry in (activeStr .. ';'):gmatch('(.-);') do
+      local task = parseActiveEntry(entry)
+      if task and #s.activeList < 3 then
+        s.activeList[#s.activeList + 1] = task
+      end
+    end
+  end
+  s.offers = parseOffersSegment(unlabeled[2] or '')
+  s.wish = parseTaskEntry(unlabeled[3])
+  return s
+end
+
+-- Two shapes on this opcode, decided by prefix. v1:
+-- "<offer entry>;...(x5, '-1' if empty)|<wish entry, or -1>|<active>", active
+-- being 'none' or the parseActiveEntry shape. v2: see parseV2State above.
+-- Both normalise into ONE state table so every fill function below is
+-- version-blind and just hides whatever its data slice doesn't carry.
+function onTaskStateOpcode(protocol, opcode, buffer)
+  local state
+  if buffer:sub(1, 3) == 'v2|' then
+    state = parseV2State(buffer)
+  else
+    local offersStr, wishStr, activeStr = buffer:match('^(.-)|(.-)|(.*)$')
+    if not offersStr then return end
+    state = {
+      v2 = false, slots = 1, daggers = {}, activeList = {},
+      offers = parseOffersSegment(offersStr),
+      wish = parseTaskEntry(wishStr),
+    }
+    local active = parseActiveEntry(activeStr)
+    if active then state.activeList[1] = active end
+  end
+
+  lastState = state
+  currentActiveIds = {}
+  for _, task in ipairs(state.activeList) do
+    currentActiveIds[task.id] = true
+  end
+
+  -- activeList is passed to fillOffers too: accepted tasks STAY in the offer
   -- slots (Tasks.acceptTask never clears them), so Offers needs to know which
-  -- row is the one being worked.
-  fillOffers(offers, wish, active)
-  fillActive(active)
+  -- rows are the ones being worked.
+  fillOffers(state.offers, state.wish, state.activeList, state.slots)
+  fillActive(state.activeList, state)
+  if state.v2 then ensureMarksTab() end
+  fillMarks(state)
+  -- Accepting/dropping with the Catalog open re-greys the visible rows.
+  applyCatalogActiveGrey()
 end
 
 -- "<chooseCost>|<id>,<name>,<tier>,<target>,<minLevel>;..." (empty after the
@@ -373,6 +508,10 @@ function init()
   tasksTabBar.onTabChange = function(widget, tab)
     if tab == progressTab then
       sendTaskAction('progress')
+    elseif tab == marksTab then
+      -- Re-render from the last push so the level gate re-reads the player's
+      -- CURRENT level on every visit, not the level at the last push.
+      fillMarks(lastState)
     elseif tab == catalogTab then
       -- Always reopen Catalog in its clean state. Leaving a stale result list
       -- from a previous visit sitting under an empty search box reads as "these
@@ -435,8 +574,8 @@ function init()
   -- this module to load while already in-game won't have one yet - a relog
   -- triggers the push since it only fires from data/creaturescripts/scripts/
   -- login.lua today).
-  fillOffers(nil, nil)
-  fillActive(nil)
+  fillOffers(nil, nil, {}, 1)
+  fillActive({}, nil)
   fillOdds()
   fillCatalog(0, {})
   fillProgress(nil)
@@ -460,12 +599,24 @@ function terminate()
   if tasksWindow then tasksWindow:destroy() end
   tasksButton = nil
   tasksWindow = nil
+  -- The Marks tab dies with the window; forget it so a re-init starts from
+  -- the lazy-creation state again instead of filling a destroyed widget.
+  marksTab = nil
+  lastState = nil
+  currentActiveIds = {}
+  v2HelloSent = false
 end
 
 function offline()
   if tasksWindow then tasksWindow:hide() end
   if tasksButton then tasksButton:setOn(false) end
-  -- lastFlashedActiveId is deliberately NOT reset here. Module-local Lua state
+  -- The v2 handshake is per-SESSION on the server, so a fresh connection
+  -- starts back at v1 until the window is opened again - the hello must be
+  -- re-sent then.
+  v2HelloSent = false
+  lastState = nil
+  currentActiveIds = {}
+  -- flashedActiveIds is deliberately NOT reset here. Module-local Lua state
   -- survives a plain logout/login within the same client process, so leaving
   -- it means a task that was already active before logout does not flash
   -- again after login. Only a genuinely fresh client launch clears it (Lua
@@ -482,36 +633,56 @@ function toggle()
     tasksWindow:raise()
     tasksWindow:focus()
     tasksButton:setOn(true)
-    -- Progress data is fetched on demand (opcode 75), so reopening the window
-    -- with Progress ALREADY the selected tab would otherwise show whatever was
-    -- true last time it was opened - onTabChange never fires when the tab
-    -- doesn't actually change.
-    refreshCurrentTab()
+    -- Payload v2 handshake, once per connection: after this the server
+    -- answers every opcode 72 push for the session in the v2 shape. A v1
+    -- server just ignores the unknown action (it politely refuses unknown
+    -- verbs), so this is safe to send blind in either deploy order.
+    if g_game.isOnline() and not v2HelloSent then
+      v2HelloSent = true
+      sendTaskAction('hello:v2')
+      -- handleTaskAction throttles to one action per 300ms server-side; the
+      -- tab refresh right below would otherwise be the request that gets
+      -- silently dropped when the window opens straight onto Progress.
+      scheduleEvent(refreshCurrentTab, 350)
+    else
+      -- Progress data is fetched on demand (opcode 75), so reopening the
+      -- window with Progress ALREADY the selected tab would otherwise show
+      -- whatever was true last time it was opened - onTabChange never fires
+      -- when the tab doesn't actually change.
+      refreshCurrentTab()
+    end
   end
 end
 
--- Re-fetch whatever the visible tab needs. Offers/Active are server-pushed
--- (opcode 72) and always current, so only Progress needs an explicit pull.
+-- Re-fetch/re-render whatever the visible tab needs. Offers/Active are
+-- server-pushed (opcode 72) and always current, so only Progress needs an
+-- explicit pull; Marks re-renders locally for its level gate.
 function refreshCurrentTab()
   if not tasksTabBar then return end
-  if tasksTabBar:getCurrentTab() == progressTab then
+  local current = tasksTabBar:getCurrentTab()
+  if current == progressTab then
     sendTaskAction('progress')
+  elseif marksTab and current == marksTab then
+    fillMarks(lastState)
   end
 end
 
 -- ============================================================================
 -- Offers tab - offers is nil (nothing pushed yet) or a table keyed 1-5,
 -- any of which may itself be nil (that slot came back empty from the server).
+-- activeList: every running task (v1: at most one; v2: up to slots). The v1
+-- "a task is running" gates generalise to "no free slot left" - a 3-slot
+-- player with one hunt running can still accept, so nothing dims or disables
+-- until the slots are actually full.
 -- ============================================================================
-function fillOffers(offers, wishTask, active)
+function fillOffers(offers, wishTask, activeList, slots)
+  activeList = activeList or {}
+  slots = slots or 1
   local panel = tabPanels.offers
-  local hasActive = active ~= nil
-  -- Computed BEFORE the slot loop (not inside the post-loop reorder block,
-  -- which runs after this text is already set) so the accept button shows
-  -- "MOVED UP" from the very first render of a fresh accept, not one push
-  -- late. True for every push while the blink-then-move sequence is either
-  -- about to start or already running for this task id.
-  local isFreshAccept = hasActive and lastFlashedActiveId ~= active.id
+
+  local activeById = {}
+  for _, task in ipairs(activeList) do activeById[task.id] = task end
+  local slotsFull = #activeList >= slots
 
   -- Wish of the Day only (Grand Wish/weekly is a separate slot the payload
   -- doesn't carry yet - TODO if this tab ever needs it live).
@@ -521,9 +692,9 @@ function fillOffers(offers, wishTask, active)
     wish:getChildById('name'):setText(('%s (Tier %d, kill %d, lvl %d+)'):format(
       wishTask.name, wishTask.tier, wishTask.target, wishTask.minLevel))
     local wishAccept = wish:getChildById('accept')
-    -- The engine refuses any accept while a task is running, so the Wish's
-    -- Accept is disabled too rather than left to fail with an error message.
-    wishAccept:setEnabled(not hasActive)
+    -- The engine refuses any accept with no free slot, so the Wish's Accept
+    -- is disabled too rather than left to fail with an error message.
+    wishAccept:setEnabled(not slotsFull and not activeById[wishTask.id])
     wishAccept.onClick = function()
       sendTaskAction('accept,' .. wishTask.id)
     end
@@ -532,7 +703,8 @@ function fillOffers(offers, wishTask, active)
     wish:getChildById('accept'):setEnabled(false)
   end
 
-  local activeSlotWidget = nil
+  -- Active rows in payload order, for the pin/flash pass after the loop.
+  local activeRows = {}
 
   for i = 1, 5 do
     local slot = panel:recursiveGetChildById('slot' .. i)
@@ -541,41 +713,47 @@ function fillOffers(offers, wishTask, active)
       local acceptBtn = slot:getChildById('accept')
       local rerollBtn = slot:getChildById('reroll')
       local creature = slot:getChildById('creature')
-      local isActiveOffer = offer and active and offer.id == active.id
-      if isActiveOffer then activeSlotWidget = slot end
+      local activeEntry = offer and activeById[offer.id] or nil
+      local isActiveOffer = activeEntry ~= nil
+      if isActiveOffer then
+        activeRows[#activeRows + 1] = { slot = slot, entry = activeEntry }
+      end
       if offer then
         slot:getChildById('name'):setText(
           offer.name .. (isActiveOffer and '  [ACTIVE]' or ''))
         slot:getChildById('info'):setText(('Tier %d - kill %d - lvl %d+'):format(offer.tier, offer.target, offer.minLevel))
         rerollBtn:setText(tr('Reroll') .. ' ' .. goldText(REROLL_COST_BY_TIER[offer.tier] or 0))
-        -- Disabled while a task runs (Mizo 2026-07-29, reversing the earlier
-        -- confirm-dialog approach): rerolling the active task's own slot
-        -- orphans it out of the offer list entirely, and nothing else in the
-        -- tab marks it as still running once that happens - five dead grey
-        -- rows with no explanation. Disabling this (and Shuffle, below) makes
-        -- Offers fully read-only while hunting, so that state can never occur.
-        rerollBtn:setEnabled(not hasActive)
+        -- Rerolling an ACTIVE row orphans the running task out of the offer
+        -- list entirely, and nothing else in the tab marks it as running
+        -- once that happens - so active rows never reroll. With a single
+        -- slot the whole tab additionally goes read-only while hunting
+        -- (Mizo 2026-07-29, reversing the earlier confirm-dialog approach);
+        -- with v2 multi-slot that blanket rule would dead-lock the FREE
+        -- slots, so there the non-active rows stay live.
+        rerollBtn:setEnabled(not isActiveOffer and (slots > 1 or #activeList == 0))
 
-        -- State is carried by CONTRAST, not by a new colour: with a task
-        -- running the other rows dim and this one stays at full brightness.
-        -- Deliberately not "tint the accepted row green" - Tier 1 already IS
-        -- green (#639922), so a green state marker would be indistinguishable
-        -- from tier language on exactly the rows most likely to be accepted.
+        -- State is carried by CONTRAST, not by a new colour: with the slots
+        -- full the other rows dim and the active ones stay at full
+        -- brightness. Deliberately not "tint the accepted row green" - Tier 1
+        -- already IS green (#639922), so a green state marker would be
+        -- indistinguishable from tier language on exactly the rows most
+        -- likely to be accepted.
         if isActiveOffer then
           slot:setOpacity(1.0)
           slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
           slot:getChildById('info'):setColor('#aaaaaa')
-          -- The Accept button here can never work (the engine refuses a second
-          -- accept), and it is the biggest element in the row - so it becomes
-          -- the live kill count instead of dead disabled chrome. Updates on
-          -- every kill for free, since opcode 72 already pushes per-kill.
-          -- During the blink-then-move sequence it shows "^ MOVED UP" instead -
-          -- see flashActiveOffer's onDone, which switches it to the counter
-          -- the instant the blink ends rather than waiting on the next kill.
-          if isFreshAccept then
+          -- The Accept button here can never work (the engine refuses a
+          -- re-accept), and it is the biggest element in the row - so it
+          -- becomes the live kill count instead of dead disabled chrome.
+          -- Updates on every kill for free, since opcode 72 already pushes
+          -- per-kill. During the blink-then-move sequence it shows
+          -- "^ MOVED UP" instead - see flashActiveOffer's onDone, which
+          -- switches it to the counter the instant the blink ends rather
+          -- than waiting on the next kill.
+          if not flashedActiveIds[offer.id] then
             acceptBtn:setText(tr('^ MOVED UP'))
           else
-            acceptBtn:setText(('%d / %d'):format(active.progress, active.target))
+            acceptBtn:setText(('%d / %d'):format(activeEntry.progress, activeEntry.target))
           end
           acceptBtn:setEnabled(false)
         else
@@ -584,8 +762,8 @@ function fillOffers(offers, wishTask, active)
           -- de-emphasis is also applied as explicit colours. If opacity does
           -- cascade the row just dims a little further; if it does not, the
           -- contrast still lands. Never rely on the opacity alone.
-          slot:setOpacity(hasActive and 0.45 or 1.0)
-          if hasActive then
+          slot:setOpacity(slotsFull and 0.45 or 1.0)
+          if slotsFull then
             slot:getChildById('name'):setColor('#5a5a5a')
             slot:getChildById('info'):setColor('#4a4a4a')
           else
@@ -593,10 +771,10 @@ function fillOffers(offers, wishTask, active)
             slot:getChildById('info'):setColor('#aaaaaa')
           end
           acceptBtn:setText(tr('Accept'))
-          -- Disabled while a task runs because the ENGINE refuses it - leaving
-          -- it clickable meant five live buttons that all failed with
-          -- "You already have an active task."
-          acceptBtn:setEnabled(not hasActive)
+          -- Disabled with no free slot because the ENGINE refuses it -
+          -- leaving it clickable meant five live buttons that all failed
+          -- with "You already have an active task."
+          acceptBtn:setEnabled(not slotsFull)
         end
 
         if offer.outfit and offer.outfit.type and offer.outfit.type > 0 then
@@ -615,9 +793,9 @@ function fillOffers(offers, wishTask, active)
       end
 
       rerollBtn.onClick = function()
-        -- Reroll is disabled above whenever hasActive, so this can only fire
-        -- with no task running - no confirm needed, nothing here can orphan
-        -- the active task out of the offer list.
+        -- Reroll is disabled above for every active row, so this can only
+        -- fire on a non-active slot - no confirm needed, nothing here can
+        -- orphan a running task out of the offer list.
         sendTaskAction('reroll,' .. i)
       end
       acceptBtn.onClick = function()
@@ -636,48 +814,61 @@ function fillOffers(offers, wishTask, active)
   -- true position TWEEN would fight the list's own reflow every frame; a
   -- ghost-panel slide effect was tried and built, then removed at Mizo's
   -- request 2026-07-30 - keep the move a plain instant reorder). The move
-  -- itself is DEFERRED until after the glow+star plays at the row's original
+  -- itself is DEFERRED until after the glow plays at the row's original
   -- spot (see flashActiveOffer above) - moving it in the same instant as the
   -- click meant the indicator only ever appeared after the row had already
-  -- jumped, which read as no indicator at all.
+  -- jumped, which read as no indicator at all. With v2 multi-slot each
+  -- active row runs this lifecycle independently; already-flashed rows stay
+  -- pinned under the Wish banner in payload order.
   local offersScroll = panel:getChildById('offersScroll')
-  if activeSlotWidget and offersScroll then
-    local id = active.id
-    if lastFlashedActiveId == id then
-      -- Sequence already finished on an earlier push - keep it pinned at top
-      -- on every subsequent state push (a later fillOffers call could
-      -- otherwise leave it wherever the server slot array put it).
-      offersScroll:moveChildToIndex(activeSlotWidget, offersScroll:getChildIndex(wish) + 1)
-    elseif pendingMoveActiveId ~= id then
-      -- Brand new accept: glow in place first, THEN move.
-      pendingMoveActiveId = id
-      flashActiveOffer(activeSlotWidget, function()
-        offersScroll:moveChildToIndex(activeSlotWidget, offersScroll:getChildIndex(wish) + 1)
-        pendingMoveActiveId = nil
-        lastFlashedActiveId = id
-        -- Switch the counter on immediately rather than waiting for the next
-        -- opcode 72 push (the next kill could be a while away) - the button
-        -- would otherwise keep reading "^ MOVED UP" long after it stopped
-        -- being true.
-        local acceptBtn = activeSlotWidget:getChildById('accept')
-        if acceptBtn then
-          acceptBtn:setText(('%d / %d'):format(active.progress, active.target))
-        end
-      end)
+  if offersScroll then
+    local pinPos = 0
+    for _, row in ipairs(activeRows) do
+      local id = row.entry.id
+      if flashedActiveIds[id] then
+        -- Sequence already finished on an earlier push - keep it pinned on
+        -- every subsequent state push (a later fillOffers call could
+        -- otherwise leave it wherever the server slot array put it).
+        pinPos = pinPos + 1
+        offersScroll:moveChildToIndex(row.slot, offersScroll:getChildIndex(wish) + pinPos)
+      elseif not pendingMoveIds[id] then
+        -- Brand new accept: glow in place first, THEN move.
+        pendingMoveIds[id] = true
+        local slotWidget, entry = row.slot, row.entry
+        flashActiveOffer(slotWidget, function()
+          pendingMoveIds[id] = nil
+          -- Dropped/finished mid-blink: a later push already re-rendered
+          -- this row as a plain offer - moving it now would reorder a row
+          -- that no longer has anything to pin.
+          if not currentActiveIds[id] then return end
+          offersScroll:moveChildToIndex(slotWidget, offersScroll:getChildIndex(wish) + 1)
+          flashedActiveIds[id] = true
+          -- Switch the counter on immediately rather than waiting for the
+          -- next opcode 72 push (the next kill could be a while away) - the
+          -- button would otherwise keep reading "^ MOVED UP" long after it
+          -- stopped being true.
+          local acceptBtn = slotWidget:getChildById('accept')
+          if acceptBtn then
+            acceptBtn:setText(('%d / %d'):format(entry.progress, entry.target))
+          end
+        end)
+      end
+      -- else: glow already in progress for this id - a kill landed
+      -- mid-sequence and re-pushed state. Do nothing here; the scheduled
+      -- callback above will still fire and move it once, at the original
+      -- time.
     end
-    -- else: glow already in progress for this id - a kill landed mid-sequence
-    -- and re-pushed state. Do nothing here; the scheduled callback above will
-    -- still fire and move it once, at the original time.
-  else
-    lastFlashedActiveId = nil
-    pendingMoveActiveId = nil
+  end
+  -- Forget ids that stopped running so a later re-accept flashes again.
+  for id in pairs(flashedActiveIds) do
+    if not activeById[id] then flashedActiveIds[id] = nil end
   end
 
   local shuffleBtn = panel:recursiveGetChildById('shuffle')
-  -- Disabled while a task runs, same reasoning as Reroll above: shuffle
-  -- replaces ALL five offers, always including the active task's, so leaving
-  -- it live would orphan the active task out of the list every time.
-  shuffleBtn:setEnabled(not hasActive)
+  -- Disabled while ANY task runs, even with free slots: shuffle replaces ALL
+  -- five offers, always including every active row, so leaving it live would
+  -- orphan the running tasks out of the list every time.
+  shuffleBtn:setEnabled(#activeList == 0)
   shuffleBtn.onClick = function()
     sendTaskAction('shuffle')
   end
@@ -685,8 +876,8 @@ function fillOffers(offers, wishTask, active)
 end
 
 -- ============================================================================
--- Active task tab - active is nil (no task, or nothing pushed yet) or
--- {id, name, progress, target}.
+-- Active task tab - activeList is {} (no tasks, or nothing pushed yet) or up
+-- to three {id, name, progress, target, outfit} entries (v1: exactly one).
 -- ============================================================================
 -- Faqir the Wise's real outfit (data/npc/Faqir the Wise.xml on the server) -
 -- outfits aren't remapped server/client like item ids are, so this look type
@@ -728,47 +919,65 @@ end
 -- sitting on the tab).
 local wasShowingEmptyState = nil
 
-function fillActive(active)
+function fillActive(activeList, s)
+  activeList = activeList or {}
+  s = s or {}
   local panel = tabPanels.active
-  -- Sprite/name/progressText/drop live inside the activeCard wrapper (matching
-  -- OfferSlot's card look), so these need a recursive lookup; the progress bar
-  -- sits outside it, but recursive finds a direct child too.
-  local activeCard = panel:getChildById('activeCard')
-  local dropBtn = panel:recursiveGetChildById('drop')
-  local creature = panel:recursiveGetChildById('creature')
-  local nameLabel = panel:recursiveGetChildById('name')
-  local progressTextLabel = panel:recursiveGetChildById('progressText')
-  local progressBar = panel:recursiveGetChildById('progress')
+  local listPanel = panel:getChildById('activeList')
   local faqirBubble = panel:getChildById('faqirBubble')
   local faqirCreature = panel:getChildById('faqirCreature')
+  local unlockBtn = panel:getChildById('unlockSlots')
+  local walletLabel = panel:getChildById('walletLabel')
 
-  if active then
+  -- Cards are rebuilt from scratch on every push - cheap at <=3 cards, and it
+  -- sidesteps every hidden-widget/stale-handler pitfall of pooling them.
+  listPanel:destroyChildren()
+
+  if #activeList > 0 then
     wasShowingEmptyState = false
-    activeCard:setVisible(true)
     faqirBubble:setVisible(false)
     faqirCreature:setVisible(false)
 
-    nameLabel:setText(active.name)
-    nameLabel:setColor('#dfdfdf')
-    progressTextLabel:setText(('%d / %d killed'):format(active.progress, active.target))
-    local percent = 0
-    if active.target > 0 then
-      percent = math.min(100, math.floor(active.progress * 100 / active.target))
-    end
-    progressBar:setPercent(percent)
-    progressBar:setVisible(true)
-    dropBtn:setVisible(true)
-    if active.outfit and active.outfit.type and active.outfit.type > 0 then
-      creature:setOutfit(active.outfit)
+    for _, task in ipairs(activeList) do
+      local card = g_ui.createWidget('ActiveTaskCard', listPanel)
+      card:getChildById('name'):setText(task.name)
+      card:getChildById('progressText'):setText(('%d / %d killed'):format(task.progress, task.target))
+      local percent = 0
+      if task.target > 0 then
+        percent = math.min(100, math.floor(task.progress * 100 / task.target))
+      end
+      card:getChildById('progress'):setPercent(percent)
+      if task.outfit and task.outfit.type and task.outfit.type > 0 then
+        card:getChildById('creature'):setOutfit(task.outfit)
+      end
+
+      -- v1 servers know only the argument-less drop (they have exactly one
+      -- task to drop); v2 must say WHICH of the up-to-three goes.
+      local dropPayload = s.v2 and ('drop,' .. task.id) or 'drop'
+      local taskName = task.name
+      card:getChildById('drop').onClick = function()
+        -- Mizo 2026-07-28: confirm before dropping - an accidental click
+        -- loses an in-progress task with no undo. UIMessageBox's own
+        -- addButton() does NOT auto-close on click (only :ok()/:cancel() do
+        -- that) - every path here (Yes/No/Escape/Enter) explicitly destroys
+        -- the box itself. Enter/Escape/No all cancel, never confirm, so an
+        -- accidental keypress can't do the destructive thing this dialog
+        -- exists to prevent.
+        local box
+        local function cancel() box:destroy() end
+        local function confirm() sendTaskAction(dropPayload); box:destroy() end
+
+        box = displayGeneralBox(tr('Drop Task'), tr('Are you sure you want to drop %s?', taskName), {
+          { text = tr('Yes'), callback = confirm },
+          { text = tr('No'), callback = cancel },
+          anchor = AnchorHorizontalCenter,
+        }, cancel, cancel)
+      end
     end
   else
-    -- Empty state: the card (and its Drop button/bar) disappears entirely
-    -- rather than showing a disabled button next to an empty bar - both
-    -- described a task that doesn't exist. Faqir himself, big, with a
-    -- speech bubble carrying the message, fills that space instead.
-    activeCard:setVisible(false)
-    progressBar:setVisible(false)
-
+    -- Empty state: no cards at all rather than a disabled button next to an
+    -- empty bar - both described a task that doesn't exist. Faqir himself,
+    -- big, with a speech bubble carrying the message, fills that space.
     faqirBubble:setVisible(true)
     faqirCreature:setVisible(true)
     faqirBubble:getChildById('faqirBubbleTitle'):setText(tr('Faqir waits.'))
@@ -781,22 +990,214 @@ function fillActive(active)
     wasShowingEmptyState = true
   end
 
-  dropBtn.onClick = function()
-    -- Mizo 2026-07-28: confirm before dropping - an accidental click loses an
-    -- in-progress task with no undo. UIMessageBox's own addButton() does NOT
-    -- auto-close on click (only :ok()/:cancel() do that) - every path here
-    -- (Yes/No/Escape/Enter) explicitly destroys the box itself.
-    -- Enter/Escape/No all cancel, never confirm, so an accidental keypress
-    -- can't do the destructive thing this dialog exists to prevent.
-    local box
-    local function cancel() box:destroy() end
-    local function confirm() sendTaskAction('drop'); box:destroy() end
+  -- "Unlock extra slots?" (Mizo): shown ONLY while there is something left to
+  -- unlock AND the server told us which shop offer sells it - hidden entirely
+  -- once expanded to 3, and on v1 servers that don't carry the field at all.
+  if s.v2 and s.slots and s.slots < 3 and s.shopoffer then
+    local shopoffer = s.shopoffer
+    unlockBtn:setVisible(true)
+    unlockBtn.onClick = function()
+      -- The site scrolls to and gold-highlights this exact card.
+      g_platform.openUrl('https://theotserver.com/?page=shop#offer-' .. shopoffer)
+    end
+  else
+    unlockBtn:setVisible(false)
+  end
 
-    box = displayGeneralBox(tr('Drop Task'), tr('Are you sure you want to drop this task?'), {
-      { text = tr('Yes'), callback = confirm },
-      { text = tr('No'), callback = cancel },
-      anchor = AnchorHorizontalCenter,
-    }, cancel, cancel)
+  -- Exp-wallet readout (v2 field; label-first version of the hourglass-purse
+  -- idea). Hidden when the payload doesn't carry the field.
+  if s.walletMinutes and s.walletCap then
+    walletLabel:setVisible(true)
+    walletLabel:setText(('Exp wallet: %d / %d min (+30%%)'):format(s.walletMinutes, s.walletCap))
+  else
+    walletLabel:setVisible(false)
+  end
+end
+
+-- ============================================================================
+-- Marks tab (Faqir's Dagger, v2 only). Two sections: DAGGERS PLACED ON YOU
+-- (red, with the pinned-contract kris art and each assassin's outfit small
+-- next to their name, so the prey knows exactly who to watch for on screen -
+-- matching the steal rule) and YOUR CONTRACT (green, rendered as a WANTED
+-- poster with the prey's actual character outfit). Display-only: story lines
+-- arrive in chat from the server; this tab only reflects current state and
+-- never animates history.
+-- ============================================================================
+local MARKS_RED = '#FF6666'
+local MARKS_GREEN = '#66CC66'
+
+-- Kris contract art (approved by Mizo - "professional zigzag"). Monospace
+-- only: MarksLine renders in terminus-10px, the single fixed-glyph-width font
+-- this client ships. Note width 27 (2 rails + 21 inner + leading space),
+-- blade centered. Per-line colours: title gold, by-names red, rails
+-- parchment, blade steel, wax-seal line bold-red at the note's bottom-left
+-- (a Label is one colour, so the seal takes its whole line red - the closest
+-- this engine gets to an inline accent).
+local KRIS_NOTE_INNER = 21
+local KRIS_COLOR_BLADE = '#b8bec8'
+local KRIS_COLOR_RAIL = '#d8c8a0'
+local KRIS_COLOR_TITLE = '#FFD700'
+local KRIS_COLOR_SEAL = '#E24B4A'
+local KRIS_BLADE_TOP = {
+  '           (O)',
+  '           |=|',
+  '           |=|',
+  '          =[=]=',
+  '      <===={ + }====>',
+  '           \\ \\',
+  '           / /',
+}
+local KRIS_NOTE_TOP = ' .=========\\ \\=========.'
+local KRIS_NOTE_BOTTOM = " '=========/ /========='"
+local KRIS_BLADE_TAIL = {
+  '           \\ \\',
+  '           / /',
+  '           \\ \\',
+  '           / /',
+  '           \\ \\',
+  '           \\/',
+}
+
+local function krisNoteLine(content)
+  content = content or ''
+  if #content > KRIS_NOTE_INNER then
+    content = content:sub(1, KRIS_NOTE_INNER - 3) .. '...'
+  end
+  local left = math.floor((KRIS_NOTE_INNER - #content) / 2)
+  return ' |' .. string.rep(' ', left) .. content
+    .. string.rep(' ', KRIS_NOTE_INNER - #content - left) .. '|'
+end
+
+local function addMarksLine(parent, text, color)
+  local line = g_ui.createWidget('MarksLine', parent)
+  line:setText(text)
+  if color then line:setColor(color) end
+  return line
+end
+
+local function addKrisArt(parent, names)
+  for _, artLine in ipairs(KRIS_BLADE_TOP) do
+    addMarksLine(parent, artLine, KRIS_COLOR_BLADE)
+  end
+  addMarksLine(parent, KRIS_NOTE_TOP, KRIS_COLOR_RAIL)
+  addMarksLine(parent, krisNoteLine(''), KRIS_COLOR_RAIL)
+  addMarksLine(parent, krisNoteLine('MARKED PREY'), KRIS_COLOR_TITLE)
+  addMarksLine(parent, krisNoteLine('-------------'), KRIS_COLOR_RAIL)
+  addMarksLine(parent, krisNoteLine(''), KRIS_COLOR_RAIL)
+  for _, name in ipairs(names) do
+    addMarksLine(parent, krisNoteLine('by  ' .. name), MARKS_RED)
+  end
+  addMarksLine(parent, ' | (*)' .. string.rep(' ', KRIS_NOTE_INNER - 4) .. '|', KRIS_COLOR_SEAL)
+  addMarksLine(parent, KRIS_NOTE_BOTTOM, KRIS_COLOR_RAIL)
+  for _, artLine in ipairs(KRIS_BLADE_TAIL) do
+    addMarksLine(parent, artLine, KRIS_COLOR_BLADE)
+  end
+end
+
+-- Created on the FIRST v2 push and never before - a v1 session never sees
+-- the tab. Never removed either (UITabBar has no removeTab); once the server
+-- has spoken v2 it keeps speaking it for the session, so that's moot.
+function ensureMarksTab()
+  if marksTab or not tasksTabBar then return end
+  tabPanels.marks = g_ui.createWidget('TasksMarksPanel')
+  marksTab = tasksTabBar:addTab(tr('Marks'), tabPanels.marks)
+  marksTabDefaultColor = marksTab:getColor()
+  -- Re-fit the row to make room, exactly like the hidden Hunt tab note says.
+  layoutTabs()
+
+  tabPanels.marks:getChildById('bladesBoard').onClick = function()
+    g_platform.openUrl('https://theotserver.com/?page=bountyboard')
+  end
+end
+
+function fillMarks(s)
+  if not marksTab then return end
+  s = s or {}
+  local panel = tabPanels.marks
+  local list = panel:getChildById('marksScroll')
+  list:destroyChildren()
+
+  local daggers = s.daggers or {}
+  local contract = s.contract
+
+  -- Tab label highlights while daggers exist - red enough to pull the eye to
+  -- the tab from anywhere in the window.
+  marksTab:setColor(#daggers > 0 and MARKS_RED or marksTabDefaultColor)
+
+  -- PvP/Hunt level gate (Mizo final call: level 100 itself is still
+  -- protected). The client reads its OWN level and only greys the controls -
+  -- the server enforces regardless, this is UX not security. Re-evaluated on
+  -- every state push and every visit to this tab, so crossing the line while
+  -- the window is open corrects itself.
+  local player = g_game.getLocalPlayer()
+  local level = player and player:getLevel() or 0
+  local gated = level < 101
+  panel:getChildById('bladesBoard'):setEnabled(not gated)
+  if gated then
+    local gate = g_ui.createWidget('MarksText', list)
+    gate:setText(tr('Unlocks at level 101 - the realm protects the young.'))
+    gate:setColor('#888888')
+  end
+
+  -- Never a blank panel.
+  if #daggers == 0 and not contract then
+    local empty = g_ui.createWidget('MarksText', list)
+    empty:setText(tr("No daggers bear your name. Faqir's book lies closed."))
+    return
+  end
+
+  -- The showdown case: your contract's prey is ALSO one of your assassins.
+  -- Both reward lines pay out there, so both entries get the callout.
+  local mutualName = nil
+  if contract then
+    for _, dagger in ipairs(daggers) do
+      if dagger.name == contract.name then
+        mutualName = dagger.name
+        break
+      end
+    end
+  end
+
+  if #daggers > 0 then
+    local header = g_ui.createWidget('MarksHeader', list)
+    header:setText(tr('DAGGERS PLACED ON YOU'))
+    header:setColor(MARKS_RED)
+
+    local names = {}
+    for _, dagger in ipairs(daggers) do names[#names + 1] = dagger.name end
+    addKrisArt(list, names)
+
+    for _, dagger in ipairs(daggers) do
+      local row = g_ui.createWidget('MarksDaggerRow', list)
+      if dagger.outfit and dagger.outfit.type and dagger.outfit.type > 0 then
+        row:getChildById('creature'):setOutfit(dagger.outfit)
+      end
+      local text = ('%s  (Level %d)'):format(dagger.name, dagger.level or 0)
+      if dagger.name == mutualName then
+        text = text .. '  -  ' .. tr('Two daggers, one grave.')
+      end
+      row:getChildById('name'):setText(text)
+    end
+  end
+
+  -- Green-skull notice between the two sections.
+  if #daggers > 0 and contract then
+    local notice = g_ui.createWidget('MarksText', list)
+    notice:setText(tr('[x_x] Drawn blades walk beneath the green skull - watch for it.'))
+    notice:setColor(MARKS_GREEN)
+  end
+
+  if contract then
+    local header = g_ui.createWidget('MarksHeader', list)
+    header:setText(tr('YOUR CONTRACT'))
+    header:setColor(MARKS_GREEN)
+
+    local poster = g_ui.createWidget('MarksPoster', list)
+    if contract.outfit and contract.outfit.type and contract.outfit.type > 0 then
+      poster:getChildById('creature'):setOutfit(contract.outfit)
+    end
+    poster:getChildById('preyName'):setText(('%s (Level %d)'):format(contract.name, contract.level or 0))
+    poster:getChildById('badge'):setVisible(mutualName ~= nil)
   end
 end
 
@@ -841,12 +1242,40 @@ function fillCatalog(chooseCost, matches)
     else
       entry:setText(('[%d] %s (Tier %d)'):format(task.id, task.name, task.tier))
     end
-    entry:setColor(CATALOG_TIER_COLOR[task.tier] or '#dfdfdf')
+    entry.tierColor = CATALOG_TIER_COLOR[task.tier] or '#dfdfdf'
+    entry:setColor(entry.tierColor)
     entry.taskId = task.id
     entry.taskName = task.name
   end
 
   panel:getChildById('chooseBtn'):setEnabled(false)
+  applyCatalogActiveGrey()
+end
+
+-- Grey any catalog row whose task is already being hunted (reachable now that
+-- v2 multi-slot lets the Catalog stay useful mid-hunt). The server refuses
+-- the choose anyway - the grey is UX, not security, so the row stays
+-- focusable. Runs after every fillCatalog AND after every state push, so
+-- accepting or dropping with the Catalog open re-colours the visible rows
+-- without needing a fresh search.
+function applyCatalogActiveGrey()
+  if not tabPanels.catalog then return end
+  local list = tabPanels.catalog:getChildById('catalogList')
+  for _, row in ipairs(list:getChildren()) do
+    if row.taskId then
+      if currentActiveIds[row.taskId] then
+        if not row.activeGrey then
+          row.activeGrey = true
+          row:setColor('#5a5a5a')
+          row:setTooltip(tr('You are already hunting these.'))
+        end
+      elseif row.activeGrey then
+        row.activeGrey = nil
+        row:setColor(row.tierColor or '#dfdfdf')
+        row:removeTooltip()
+      end
+    end
+  end
 end
 
 -- ============================================================================

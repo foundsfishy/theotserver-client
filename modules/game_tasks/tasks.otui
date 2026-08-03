@@ -185,83 +185,114 @@ TasksOffersPanel < Panel
     step: 14
     pixels-scroll: true
 
-TasksActivePanel < Panel
-  padding-top: 8
+// One running task = one card. A v1 server fills exactly one of these; a v2
+// server fills up to three (its slots field caps it). Cards are CREATED
+// per-fill in fillActive rather than declared here - dynamic creation means
+// an empty list simply has no children, so there are no hidden-widget gaps
+// inside the verticalBox to manage. Same card look as OfferSlot (fill,
+// border, padding, 64x64 sprite left), but the progress bar moves INSIDE
+// along the bottom edge: with up to three cards stacked there is no single
+// "under the card" spot for a shared full-width bar anymore.
+ActiveTaskCard < Panel
+  height: 112
+  background-color: #1a1a1a
+  border-width: 1
+  border-color: #4a453e
+  padding: 6
+  margin-bottom: 6
 
-  // Card is a straight mirror of OfferSlot: same height/fill/border/padding,
-  // 64x64 unframed sprite left with the same -6 draw-offset compensation, the
-  // two text lines straddling the vertical midline with the same 18/8 side
-  // margins and 2/1 midline gap, action button right on the midline.
-  Panel
-    id: activeCard
-    height: 90
-    background-color: #1a1a1a
-    border-width: 1
-    border-color: #4a453e
-    padding: 6
-    anchors.top: parent.top
-    anchors.left: parent.left
-    anchors.right: parent.right
-
-    UICreature
-      id: creature
-      phantom: true
-      size: 64 64
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.left: parent.left
-      margin-top: -6
-      margin-left: 13
-
-    TaskButton
-      id: drop
-      !text: tr('Drop Task')
-      width: 84
-      anchors.verticalCenter: parent.verticalCenter
-      anchors.right: parent.right
-      margin-right: 24
-
-    Label
-      id: name
-      font: verdana-11px-rounded
-      anchors.bottom: parent.verticalCenter
-      anchors.left: creature.right
-      anchors.right: drop.left
-      margin-left: 18
-      margin-right: 8
-      margin-bottom: 2
-      text: No active task
-
-    Label
-      id: progressText
-      font: verdana-11px-monochrome
-      color: #dfdfdf
-      text-wrap: true
-      multi-line: true
-      height: 30
-      anchors.top: parent.verticalCenter
-      anchors.left: creature.right
-      anchors.right: drop.left
-      margin-left: 18
-      margin-right: 8
-      margin-top: 1
-      text: -
-
-  // Full width UNDER the card, not inside it - inside, it had to squeeze into
-  // the middle column between sprite and button, which fought the two-line
-  // centering the offers layout is built on.
   ProgressBar
     id: progress
     background-color: #639922
-    height: 16
-    anchors.top: prev.bottom
-    margin-top: 10
+    height: 14
+    anchors.bottom: parent.bottom
     anchors.left: parent.left
     anchors.right: parent.right
     phantom: false
 
-  // Empty-state only: activeCard hides entirely (see fillActive) and this
-  // big Faqir + speech bubble fills the space instead, rather than a small
-  // placeholder line in the card. No dedicated speech-bubble art exists in
+  UICreature
+    id: creature
+    phantom: true
+    size: 64 64
+    anchors.top: parent.top
+    anchors.left: parent.left
+    margin-top: 8
+    margin-left: 13
+
+  TaskButton
+    id: drop
+    !text: tr('Drop Task')
+    width: 84
+    anchors.top: parent.top
+    margin-top: 30
+    anchors.right: parent.right
+
+  Label
+    id: name
+    font: verdana-11px-rounded
+    anchors.top: parent.top
+    margin-top: 16
+    anchors.left: creature.right
+    anchors.right: drop.left
+    margin-left: 18
+    margin-right: 8
+    text: No active task
+
+  Label
+    id: progressText
+    font: verdana-11px-monochrome
+    color: #dfdfdf
+    text-wrap: true
+    multi-line: true
+    height: 30
+    anchors.top: prev.bottom
+    margin-top: 4
+    anchors.left: creature.right
+    anchors.right: drop.left
+    margin-left: 18
+    margin-right: 8
+    text: -
+
+TasksActivePanel < Panel
+  padding-top: 8
+
+  Panel
+    id: activeList
+    layout: verticalBox
+    fit-children: true
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  // v2-only chrome, both born hidden and only shown once a v2 payload proves
+  // the server carries their data (wallet / shopoffer fields). Anchored to the
+  // panel BOTTOM rather than under activeList so their position never depends
+  // on how many cards exist above them. walletLabel is the anchor base for
+  // unlockSlots even while invisible - invisible widgets keep their rect in
+  // this engine, so the chain stays stable whichever of the two is shown.
+  Label
+    id: walletLabel
+    font: verdana-11px-monochrome
+    color: #FAC775
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    visible: false
+    text: -
+
+  TaskButton
+    id: unlockSlots
+    !text: tr('Unlock extra slots?')
+    !tooltip: tr('Buy an extra task slot in the website shop')
+    anchors.bottom: walletLabel.top
+    margin-bottom: 6
+    anchors.left: parent.left
+    anchors.right: parent.right
+    visible: false
+
+  // Empty-state only: with no running tasks the card list has no children
+  // (see fillActive) and this big Faqir + speech bubble fills the space
+  // instead, rather than a small placeholder line in a dead card. No dedicated speech-bubble art exists in
   // this client (checked - nothing under data/images), so the bubble is a
   // plain WishBanner-style panel above his head, not a pointed-tail shape.
   Panel
@@ -539,6 +570,140 @@ TasksOddsPanel < Panel
     id: oddsRow4
   OddsRow
     id: oddsRow5
+
+// ===== Marks tab (Faqir's Dagger, v2 only - the tab itself is only added
+// once a v2 payload arrives, so v1 sessions never see any of this) =====
+
+// terminus-10px is the ONLY fixed-glyph-width font in data/fonts
+// (fixed-glyph-width: 6) - the kris contract art is column-aligned ASCII and
+// falls apart in any proportional face. Height 11 packs the art lines tight
+// enough to read as one drawing instead of a spaced-out list.
+MarksLine < Label
+  font: terminus-10px
+  height: 11
+  color: #d8c8a0
+
+MarksHeader < Label
+  font: verdana-11px-rounded
+  height: 18
+  margin-top: 8
+  margin-bottom: 2
+
+MarksText < Label
+  font: verdana-11px-rounded
+  color: #aaaaaa
+  text-wrap: true
+  multi-line: true
+  height: 30
+  margin-bottom: 2
+
+MarksDaggerRow < Panel
+  height: 36
+  margin-bottom: 2
+
+  UICreature
+    id: creature
+    phantom: true
+    size: 32 32
+    anchors.verticalCenter: parent.verticalCenter
+    anchors.left: parent.left
+    margin-left: 6
+
+  Label
+    id: name
+    font: verdana-11px-rounded
+    color: #FF6666
+    anchors.verticalCenter: parent.verticalCenter
+    anchors.left: creature.right
+    anchors.right: parent.right
+    margin-left: 12
+
+// The wanted poster (Mizo): the prey's ACTUAL character outfit rendered via
+// UICreature - same technique OfferSlot uses for monster outfits and
+// fillActive's Faqir materialize - with the header above and name+level in
+// contract green beside it.
+MarksPoster < Panel
+  height: 112
+  background-color: #1a1a1a
+  border-width: 1
+  border-color: #2e5c2e
+  padding: 6
+  margin-bottom: 4
+
+  UICreature
+    id: creature
+    phantom: true
+    size: 64 64
+    anchors.verticalCenter: parent.verticalCenter
+    anchors.left: parent.left
+    margin-top: -6
+    margin-left: 13
+
+  Label
+    id: wantedHeader
+    font: verdana-11px-rounded
+    color: #E24B4A
+    anchors.top: parent.top
+    margin-top: 12
+    anchors.left: creature.right
+    anchors.right: parent.right
+    margin-left: 18
+    text: WANTED - DEAD
+
+  Label
+    id: preyName
+    font: verdana-11px-rounded
+    color: #66CC66
+    anchors.top: prev.bottom
+    margin-top: 6
+    anchors.left: creature.right
+    anchors.right: parent.right
+    margin-left: 18
+    text: -
+
+  Label
+    id: badge
+    font: verdana-11px-rounded
+    color: #FFD700
+    anchors.top: prev.bottom
+    margin-top: 6
+    anchors.left: creature.right
+    anchors.right: parent.right
+    margin-left: 18
+    visible: false
+    text: Two daggers, one grave.
+
+TasksMarksPanel < Panel
+  padding-top: 8
+
+  // Fixed footer outside the scroll, same reasoning as the Offers tab's
+  // Shuffle: a whole-tab action should never need scrolling to find.
+  TaskButton
+    id: bladesBoard
+    !text: tr('The Blades Board')
+    !tooltip: tr('Open The Blades Board on the website')
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  ScrollablePanel
+    id: marksScroll
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: bladesBoard.top
+    margin-right: 16
+    margin-bottom: 8
+    vertical-scrollbar: marksScrollBar
+    layout: verticalBox
+
+  VerticalScrollBar
+    id: marksScrollBar
+    anchors.top: marksScroll.top
+    anchors.bottom: marksScroll.bottom
+    anchors.right: parent.right
+    step: 14
+    pixels-scroll: true
 
 TasksWindow < MainWindow
   id: tasksWindow
