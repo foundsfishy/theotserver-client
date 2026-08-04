@@ -14,28 +14,39 @@ TasksTabBarButton < TabBarButton
     margin-left: 4
 
   $hover !checked:
-    color: #ffffff
+    color: #F0E6D2
 
   $checked:
-    color: #ffffff
-    image-color: #EF9F27
+    color: #F0E6D2
+    image-color: #EFA83A
 
+// Gold-themed base (Mizo 2026-08-04 color pass): every plain button in this
+// window (Drop Hunt, Shuffle, The Blades Board, Accept) used to inherit only
+// height+font from the corelib Button default - which is IMAGE-skinned
+// (image-source: /images/ui/button, tinted via image-color - the corelib's
+// own #dfdfdf grey), not a flat CSS-style fill - while WishAcceptButton
+// right below already proved out the gold image-color tint. Moved that same
+// tint up here so it's consistent everywhere instead of exclusive to one
+// banner's Accept button.
 TaskButton < Button
   height: 21
   font: verdana-11px-rounded
-
-// Themed to match WishBanner's own palette (background #2a1e08, border/label
-// #EF9F27/#FAC775) so its Accept button reads as part of that banner rather
-// than a generic grey button dropped on top of it.
-WishAcceptButton < TaskButton
-  image-color: #EF9F27
-  color: white
+  image-color: #EFA83A
+  color: #EFA83A
 
   $hover !disabled:
-    image-color: #FAC775
+    image-color: #FFC968
+    color: #FFC968
 
   $pressed:
-    image-color: #c97f1c
+    image-color: #B87A1E
+    color: #B87A1E
+
+// Same palette as the base TaskButton now - kept as its own type (rather than
+// folded away) since the Wish banner's Accept is still the one CTA players
+// should notice fastest, and a distinct type name leaves room to re-diverge
+// later without hunting down every plain TaskButton usage site.
+WishAcceptButton < TaskButton
 
 OfferSlot < Panel
   height: 90
@@ -97,7 +108,7 @@ OfferSlot < Panel
   Label
     id: info
     font: verdana-11px-rounded
-    color: #aaaaaa
+    color: #B0A48C
     anchors.top: parent.verticalCenter
     anchors.left: creature.right
     anchors.right: reroll.left
@@ -110,14 +121,14 @@ WishBanner < Panel
   height: 40
   background-color: #2a1e08
   border-width: 1
-  border-color: #EF9F27
+  border-color: #EFA83A
   padding: 6
   margin-bottom: 14
 
   Label
     id: label
     font: verdana-11px-rounded
-    color: #FAC775
+    color: #FFC968
     width: 260
     anchors.top: parent.top
     anchors.left: parent.left
@@ -138,8 +149,58 @@ WishBanner < Panel
     anchors.verticalCenter: parent.verticalCenter
     anchors.right: parent.right
 
+// Persistent Faqir mascot (Mizo 2026-08-04) - reused on EVERY tab in this
+// window (Offers/Active Task/Catalog/Progress/Odds/Bounties) so he reads as
+// a companion NPC threading through the whole window rather than chrome
+// specific to one tab. No self anchors on the root (height + margin-bottom
+// only) - box-layout-safe (TasksOddsPanel uses layout:verticalBox at its own
+// top level, and a box-layout child CANNOT carry its own anchors, see
+// [[reference-otui-gotchas]] #2), so every anchor-based panel adds
+// anchors.top/left/right inline at its own usage site instead of baking
+// them into the shared type. Bubble text floats plain above his head (no
+// separate bordered box - it already sits inside each panel's own frame
+// border), single line by design so the block stays a fixed ~60px
+// everywhere regardless of which tab it's on.
+FaqirMascot < Panel
+  height: 60
+  margin-bottom: 6
+  cursor: pointer
+
+  Label
+    id: faqirBubbleText
+    font: verdana-11px-monochrome
+    color: #FFC968
+    text-wrap: true
+    height: 16
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+    text-align: center
+    text: -
+
+  UICreature
+    id: faqirCreature
+    phantom: true
+    size: 40 40
+    anchors.top: prev.bottom
+    margin-top: 2
+    anchors.horizontalCenter: parent.horizontalCenter
+
+// Faqir's counter (Mizo 2026-08-04): every tab in this window now shares the
+// same dark bordered frame (#171209/#5c4a24) instead of Active Task being
+// the only one with real depth - the whole window reads as "inside Faqir's
+// tent" rather than one styled tab bolted onto five plain ones.
 TasksOffersPanel < Panel
-  padding-top: 8
+  padding: 8
+  background-color: #171209
+  border-width: 1
+  border-color: #5c4a24
+
+  FaqirMascot
+    id: faqirMascot
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
 
   // Shuffle is a FIXED footer, deliberately outside the ScrollablePanel. As the
   // last child of the scrolling list it only appeared after scrolling past all
@@ -155,6 +216,7 @@ TasksOffersPanel < Panel
   ScrollablePanel
     id: offersScroll
     anchors.top: parent.top
+    margin-top: 66
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: shuffle.top
@@ -193,11 +255,13 @@ TasksOffersPanel < Panel
 // border, padding, 64x64 sprite left), but the progress bar moves INSIDE
 // along the bottom edge: with up to three cards stacked there is no single
 // "under the card" spot for a shared full-width bar anymore.
-// 108 rather than a rounder 112: the tab content area under the tab bar is
-// 369px, and three stacked cards (max slots) plus the wallet readout must
-// fit it with slack - 3*(108+6) + wallet line = ~356.
+// 90 (was 108 pre-redesign): fillActive now ALWAYS renders exactly 3 slot
+// rows (busy/empty/locked, see TaskSlotEmpty/TaskSlotLocked below) under a
+// persistent Faqir mascot header - 3*(90+6) + mascot(34+6) = 328 against the
+// ~369px tab content area, leaving slack the old wallet-line math no longer
+// needs (wallet moved to Skills, Mizo 2026-08-04).
 ActiveTaskCard < Panel
-  height: 108
+  height: 90
   background-color: #1a1a1a
   border-width: 1
   border-color: #4a453e
@@ -206,8 +270,9 @@ ActiveTaskCard < Panel
 
   ProgressBar
     id: progress
-    background-color: #639922
+    background-color: #6FBF6F
     height: 14
+    margin-bottom: 2
     anchors.bottom: parent.bottom
     anchors.left: parent.left
     anchors.right: parent.right
@@ -244,45 +309,145 @@ ActiveTaskCard < Panel
   Label
     id: progressText
     font: verdana-11px-monochrome
-    color: #dfdfdf
+    color: #F0E6D2
     text-wrap: true
     multi-line: true
-    height: 30
+    height: 16
     anchors.top: prev.bottom
-    margin-top: 4
+    margin-top: 2
     anchors.left: creature.right
     anchors.right: drop.left
     margin-left: 18
     margin-right: 8
     text: -
 
-TasksActivePanel < Panel
-  padding-top: 8
+// Owned-but-idle slot: one of the player's (up to 3) unlocked concurrent-task
+// slots with nothing running in it right now. Deliberately lighter than
+// ActiveTaskCard - there's no creature/progress data for an empty slot - but
+// same panel language (dark fill, thin grey border) so it reads as a sibling
+// row rather than a different kind of thing.
+TaskSlotEmpty < Panel
+  height: 44
+  background-color: #1a1a1a
+  border-width: 1
+  border-color: #4a453e
+  padding: 6
+  margin-bottom: 6
 
+  Label
+    id: text
+    font: verdana-11px-monochrome
+    color: #B0A48C
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.verticalCenter: parent.verticalCenter
+    text: -
+
+// Locked slot: a concurrent-task slot the player has NOT bought yet. Greyed
+// further than TaskSlotEmpty (dimmer fill/border) and carries a one-line
+// teaser instead of a bare "LOCKED" wall - the point is to sell the unlock,
+// not just gate it. No lock glyph exists in this client's font atlases
+// (checked - same reason OfferSlot uses "^" rather than a real arrow), so a
+// bracketed tag stands in.
+TaskSlotLocked < Panel
+  height: 44
+  background-color: #141414
+  border-width: 1
+  border-color: #33312c
+  padding: 6
+  margin-bottom: 6
+
+  // Gold accent bar + gold tag (Mizo 2026-08-04 color pass): the comment
+  // above already said the goal was "sell the unlock, not just gate it",
+  // but #6a6a62 on #141414 was so close to invisible it read as a dead
+  // zone instead of an offer. This OTUI fork's Panel only has ONE uniform
+  // border-color (no per-side colors, checked against the rest of this
+  // codebase), so the accent is a real 2px child bar rather than a
+  // CSS-style border-left.
   Panel
-    id: activeList
-    layout: verticalBox
-    fit-children: true
+    id: accent
+    background-color: #EFA83A
+    width: 2
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+
+  Label
+    id: tag
+    font: verdana-11px-rounded
+    color: #EFA83A
+    !text: '[LOCKED]'
+    anchors.left: accent.right
+    margin-left: 6
+    anchors.top: parent.top
+
+  Label
+    id: teaser
+    font: verdana-11px-monochrome
+    color: #55534c
+    anchors.left: accent.right
+    margin-left: 6
+    anchors.right: parent.right
+    anchors.top: prev.bottom
+    margin-top: 1
+    text: -
+
+// Faqir's counter (Mizo 2026-08-04 redesign): the tab used to be a floating
+// dialogue header sitting ABOVE a separate list of cards, two disconnected
+// pieces of chrome. Now the whole tab is ONE bordered frame - Faqir stands
+// at the top of it, his line floating above his head like the old full
+// takeover empty-state used to show, and the 3 slot cards sit below him
+// inside the SAME box, like goods laid out on his counter. Dulled gold
+// (#5c4a24) rather than the Wish/CTA's bright #EFA83A - this frame is
+// background furniture, not a thing to click.
+TasksActivePanel < Panel
+  padding: 8
+  background-color: #171209
+  border-width: 1
+  border-color: #5c4a24
+
+  // Persistent Faqir mascot - always shown (not just the empty state) so the
+  // tab reads as "Faqir's window" in every state. Now the shared FaqirMascot
+  // type (Mizo 2026-08-04 - every tab in this window uses the same one).
+  // Fits comfortably even at 3 busy cards:
+  // 60 (mascot) + 3*(90+6) = 348 against the ~369px tab content area.
+  FaqirMascot
+    id: faqirMascot
     anchors.top: parent.top
     anchors.left: parent.left
     anchors.right: parent.right
 
-  // v2-only chrome, both born hidden and only shown once a v2 payload proves
-  // the server carries their data (wallet / shopoffer fields). Anchored to the
-  // panel BOTTOM rather than under activeList so their position never depends
-  // on how many cards exist above them. walletLabel is the anchor base for
-  // unlockSlots even while invisible - invisible widgets keep their rect in
-  // this engine, so the chain stays stable whichever of the two is shown.
-  Label
-    id: walletLabel
-    font: verdana-11px-monochrome
-    color: #FAC775
-    anchors.bottom: parent.bottom
+  // Always exactly 3 rows (busy / owned-idle / locked) - see fillActive,
+  // which pads activeList out to 3 children every push rather than only
+  // rendering however many tasks are actually running. anchors.top +
+  // margin-top (NOT a faqirMascot.bottom cross-widget anchor - never
+  // confirmed reliable in this engine, and margin-top: parent.top is the
+  // exact pattern that was proven working the hard way debugging this same
+  // panel's earlier fit-children bug, see [[reference-otui-gotchas]] #12).
+  Panel
+    id: activeList
+    layout:
+      type: verticalBox
+      fit-children: true
+    anchors.top: parent.top
+    margin-top: 66
     anchors.left: parent.left
     anchors.right: parent.right
-    visible: false
-    text: -
 
+  // v2-only chrome, born hidden and only shown once a v2 payload proves the
+  // server carries the shopoffer field. Anchored to the panel BOTTOM rather
+  // than under activeList so its position never depends on how many cards
+  // exist above it. Text is set dynamically in fillActive ("Unlock 1/2 more
+  // task slot(s)") rather than the old static "Unlock extra slots?".
+  //
+  // The Exp Boost Wallet readout that used to live here moved to the Skills
+  // window (Mizo 2026-08-04) - it's a persistent character resource other
+  // reward sources besides PvP Hunt can deposit into, so it belongs next to
+  // Experience/Kills rather than tucked inside this one task tab. See
+  // game_skills/skills.lua onExpWalletOpcode. The wallet fields still ride
+  // inside this payload (server continues sending them, harmlessly unused
+  // here now) - left alone rather than re-touching the v2 grammar contract.
+  //
   // WishAcceptButton, not a plain TaskButton: the gold treatment is the
   // window's existing "this one is special" accent (the Wish banner), and
   // this is the one button that leads to the shop.
@@ -290,58 +455,26 @@ TasksActivePanel < Panel
     id: unlockSlots
     !text: tr('Unlock extra slots?')
     !tooltip: tr('Buy an extra task slot in the website shop')
-    anchors.bottom: walletLabel.top
+    anchors.bottom: parent.bottom
     margin-bottom: 6
     anchors.left: parent.left
     anchors.right: parent.right
     visible: false
 
-  // Empty-state only: with no running tasks the card list has no children
-  // (see fillActive) and this big Faqir + speech bubble fills the space
-  // instead, rather than a small placeholder line in a dead card. No dedicated speech-bubble art exists in
-  // this client (checked - nothing under data/images), so the bubble is a
-  // plain WishBanner-style panel above his head, not a pointed-tail shape.
-  Panel
-    id: faqirBubble
-    width: 280
-    height: 50
-    background-color: #2a1e08
-    border-width: 1
-    border-color: #EF9F27
-    padding: 8
-    anchors.bottom: faqirCreature.top
-    margin-bottom: 6
-    anchors.horizontalCenter: parent.horizontalCenter
-
-    Label
-      id: faqirBubbleTitle
-      font: verdana-11px-rounded
-      color: #FAC775
-      width: 264
-      height: 14
-      anchors.top: parent.top
+    // The exact same icon the website shop card shows for Task Slot
+    // Expansion (Mizo 2026-08-04) - so a player recognizes "that's the same
+    // thing" the moment they land on the shop page from here. No TASK+
+    // badge text on this one: at ~18px the button icon is too small for any
+    // overlay text to stay legible (unlike the shop card's much larger
+    // sprite) - same UIItem+setItemId pattern TaskBarButton already uses
+    // (40-inventory.otui) for its own leading icon.
+    UIItem
+      id: unlockIcon
       anchors.left: parent.left
-      text: -
-
-    Label
-      id: faqirBubbleText
-      font: verdana-11px-monochrome
-      color: #dfdfdf
-      text-wrap: true
-      multi-line: true
-      width: 264
-      height: 26
-      anchors.top: prev.bottom
-      anchors.left: parent.left
-      text: -
-
-  UICreature
-    id: faqirCreature
-    phantom: true
-    size: 128 128
-    anchors.verticalCenter: parent.verticalCenter
-    margin-top: 11
-    anchors.horizontalCenter: parent.horizontalCenter
+      anchors.verticalCenter: parent.verticalCenter
+      margin-left: 6
+      size: 18 18
+      virtual: true
 
 
 // This client has NO text-outline property (checked every .otui + style file),
@@ -353,7 +486,7 @@ TaskCatalogEntry < Label
   height: 20
   focusable: true
   font: verdana-11px-antialised
-  color: #dfdfdf
+  color: #F0E6D2
   text-offset: 4 3
   background-color: alpha
 
@@ -368,13 +501,23 @@ TaskCatalogEntry < Label
     background-color: alpha
 
 TasksCatalogPanel < Panel
-  padding-top: 8
+  padding: 8
+  background-color: #171209
+  border-width: 1
+  border-color: #5c4a24
+
+  FaqirMascot
+    id: faqirMascot
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
 
   Label
     id: searchLabel
     font: verdana-11px-monochrome
-    color: #dfdfdf
+    color: #F0E6D2
     anchors.top: parent.top
+    margin-top: 66
     anchors.left: parent.left
     anchors.right: parent.right
     text: Search by name or id
@@ -382,30 +525,65 @@ TasksCatalogPanel < Panel
   Label
     id: searchHint
     font: verdana-11px-monochrome
-    color: #dfdfdf
+    color: #F0E6D2
     anchors.top: prev.bottom
     margin-top: 3
     anchors.left: parent.left
     anchors.right: parent.right
     text: Type below to search all tasks by name or id.
 
+  // TextEdit's corelib default (data/styles/10-textedits.otui) draws a light
+  // beige 9-slice box (image-source: /images/ui/textedit) with near-black
+  // text - the standard Tibia input look, meant for a light parent. Cleared
+  // and re-themed dark to match this tab's new frame instead (Mizo bug
+  // report 2026-08-04: "brighter elements in Catalog tab" - this box was
+  // probably the most visible offender, a literal light rectangle sitting
+  // inside the dark frame).
   TextEdit
     id: search
+    image-source:
+    background-color: #0a0500
+    border-width: 1
+    border-color: #4a453e
+    color: #F0E6D2
+    selection-color: #F0E6D2
+    selection-background-color: #4a453e
     !tooltip: tr('Search tasks by monster name, task name or task id')
     placeholder: Start typing a monster name or task id...
-    placeholder-color: #FFD700
+    placeholder-color: #EFA83A
     anchors.top: prev.bottom
     margin-top: 16
     anchors.left: parent.left
     anchors.right: parent.right
 
+  // chooseBtn declared BEFORE catalogList and anchored to parent.bottom
+  // (like Offers' shuffle / Bounties' bladesBoard) so catalogList can anchor
+  // ITS OWN bottom to chooseBtn.top and grow to fill whatever space is left,
+  // instead of guessing a fixed height number that would either clip or
+  // leave a dead gap now that the mascot eats ~66px off the top.
+  TaskButton
+    id: chooseBtn
+    !text: tr('Hand-pick selected task')
+    anchors.bottom: parent.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  // TextList's corelib default (data/styles/10-listboxes.otui) is a bright
+  // #636363 mid-grey box - fine against the OLD plain tab background, but a
+  // glaring mismatch against this tab's new dark #171209 frame (Mizo bug
+  // report 2026-08-04: "brighter elements in Catalog tab"). Overridden to
+  // match the rest of the window's card fill instead of relying on the
+  // corelib default.
   TextList
     id: catalogList
-    anchors.top: prev.bottom
+    background-color: #120c04
+    border-color: #4a453e
+    anchors.top: search.bottom
     margin-top: 12
     anchors.left: parent.left
     anchors.right: parent.right
-    height: 240
+    anchors.bottom: chooseBtn.top
+    margin-bottom: 12
     focusable: false
     vertical-scrollbar: catalogListScrollBar
 
@@ -416,14 +594,6 @@ TasksCatalogPanel < Panel
     anchors.right: catalogList.right
     step: 14
     pixels-scroll: true
-
-  TaskButton
-    id: chooseBtn
-    !text: tr('Hand-pick selected task')
-    anchors.top: catalogList.bottom
-    margin-top: 12
-    anchors.left: parent.left
-    anchors.right: parent.right
 
 TasksHuntPanel < Panel
   padding-top: 8
@@ -439,7 +609,7 @@ TasksHuntPanel < Panel
 
   ProgressBar
     id: huntProgress
-    background-color: #E24B4A
+    background-color: #E85A5A
     height: 16
     anchors.top: prev.bottom
     margin-top: 10
@@ -463,66 +633,190 @@ TasksHuntPanel < Panel
     margin-left: 6
     width: 110
 
-TasksProgressPanel < Panel
-  padding-top: 8
+// Stat card (Mizo 2026-08-04 Progress tab overhaul) - big number + caption
+// on top, a fill indicator below. Streak/Weekly/Season Pass all share this
+// ONE type so the tab reads as one consistent visual language instead of a
+// stack of plain sentence Labels with no hierarchy - the numbers used to
+// just BE the sentence text, same weight as everything around them, which
+// is exactly what read as "just text" instead of a real stat display.
+// Accent color defaults to Streak's amber; fillProgress recolors statNumber/
+// statBar per card (blue for Weekly, purple for Season Pass) so the three
+// stay visually distinct at a glance.
+ProgressStatCard < Panel
+  height: 96
+  background-color: #1a1a1a
+  border-width: 1
+  border-color: #4a453e
+  padding: 8
+  margin-bottom: 8
 
   Label
-    id: streakLabel
-    font: verdana-11px-monochrome
-    color: #dfdfdf
+    id: statNumber
+    font: sans-bold-16px
+    color: #EFA83A
+    height: 22
+    // No width previously (Mizo bug report 2026-08-04: "the number feels
+    // like it's cutoff") - a Label with neither an explicit width NOR an
+    // anchors.right doesn't reliably grow to fit text set dynamically via
+    // :setText() (unlike !text: set at parse time, which auto-sizes), so it
+    // rendered at whatever narrow default width it started with and clipped
+    // the real numbers. 90px comfortably fits the widest case ("Tier 10/10").
+    width: 90
     anchors.top: parent.top
     anchors.left: parent.left
-    anchors.right: parent.right
-    text: Streak
-
-  // streakRow (26px) and passRow (8px) removed 2026-07-29: both were empty
-  // panels no Lua ever populated - placeholders for the unbuilt day-pip /
-  // season-segment widgets - so they rendered as invisible dead gaps and were
-  // the source of the tab's uneven spacing. Re-add them WITH their fill code,
-  // not before it.
+    text: -
 
   Label
-    id: weeklyLabel
-    font: verdana-11px-monochrome
-    color: #dfdfdf
-    anchors.top: prev.bottom
-    margin-top: 12
-    anchors.left: parent.left
+    id: statCaption
+    font: verdana-11px-rounded
+    color: #B0A48C
+    anchors.verticalCenter: statNumber.verticalCenter
+    anchors.left: statNumber.right
     anchors.right: parent.right
-    text: Weekly challenge
+    margin-left: 10
+    text: -
 
   ProgressBar
-    id: weeklyProgress
-    background-color: #378ADD
-    height: 16
-    anchors.top: prev.bottom
-    margin-top: 4
+    id: statBar
+    background-color: #EFA83A
+    height: 12
+    anchors.top: statNumber.bottom
+    margin-top: 10
     anchors.left: parent.left
     anchors.right: parent.right
     phantom: false
 
-  Label
-    id: passLabel
-    font: verdana-11px-monochrome
-    color: #dfdfdf
-    anchors.top: prev.bottom
-    margin-top: 12
+  // Freeze-token pips - Streak card only (fillProgress hides statBar and
+  // shows this instead for that one card, since a handful of banked tokens
+  // reads better as discrete pips than a percentage bar). 5 static slots is
+  // comfortably above STREAK_FREEZE_CAP (currently 3, data/lib/tasks.lua)
+  // with headroom to grow; fillProgress only shows the first freezeCap.
+  Panel
+    id: pipRow
+    height: 12
+    anchors.top: statNumber.bottom
+    margin-top: 10
     anchors.left: parent.left
     anchors.right: parent.right
-    text: Season pass
+    visible: false
+    layout:
+      type: horizontalBox
+      spacing: 4
 
+    Panel
+      id: pip1
+      width: 16
+      height: 12
+      background-color: #4a453e
+      border-width: 1
+      border-color: #2a2a2a
+    Panel
+      id: pip2
+      width: 16
+      height: 12
+      background-color: #4a453e
+      border-width: 1
+      border-color: #2a2a2a
+    Panel
+      id: pip3
+      width: 16
+      height: 12
+      background-color: #4a453e
+      border-width: 1
+      border-color: #2a2a2a
+    Panel
+      id: pip4
+      width: 16
+      height: 12
+      background-color: #4a453e
+      border-width: 1
+      border-color: #2a2a2a
+    Panel
+      id: pip5
+      width: 16
+      height: 12
+      background-color: #4a453e
+      border-width: 1
+      border-color: #2a2a2a
+
+  // Visible one-liner (Mizo 2026-08-04: "I cannot read the quick
+  // explanation... under the 3 bars") - the hover tooltip added earlier
+  // the same day answered "what's the catch" for anyone who thought to
+  // hover, but a player trying to understand why they should care needs to
+  // SEE that without discovering a hover trick first. Text is set per-card
+  // in fillProgress (tasks.lua) - anchored to statBar.bottom specifically
+  // (not pipRow, which shares the identical rect) since a hidden widget's
+  // geometry still resolves fine as an anchor target in this engine.
   Label
+    id: statHint
+    font: verdana-11px-monochrome
+    color: #8a7c67
+    text-wrap: true
+    multi-line: true
+    height: 26
+    anchors.top: statBar.bottom
+    margin-top: 6
+    anchors.left: parent.left
+    anchors.right: parent.right
+    text: -
+
+TasksProgressPanel < Panel
+  padding: 8
+  background-color: #171209
+  border-width: 1
+  border-color: #5c4a24
+
+  FaqirMascot
+    id: faqirMascot
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  // Tooltips (Mizo 2026-08-04: "what's the catch with these?") - the three
+  // cards showed numbers with no explanation of what they're FOR or what
+  // completing them actually pays out, which reads as arbitrary trivia
+  // rather than something worth chasing. Hover explains the payoff; the
+  // card itself stays a clean number, matching the exp wallet's own
+  // hover-for-detail pattern right above this tab.
+  ProgressStatCard
+    id: streakCard
+    anchors.top: parent.top
+    margin-top: 66
+    anchors.left: parent.left
+    anchors.right: parent.right
+    !tooltip: tr("Complete at least one task a day to keep this going. Every 5th day: a free reroll. Every 7th day: a freeze token, banked to survive missing a single day. Every 15th day: 50,000 gold and a 15%% exp boost.")
+
+  ProgressStatCard
+    id: weeklyCard
+    anchors.top: streakCard.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    !tooltip: tr("Complete 5 tasks of any kind before the week resets Monday - reward is 50,000 gold and 10 minutes of haste, granted automatically the moment you hit 5.")
+
+  ProgressStatCard
+    id: passCard
+    anchors.top: weeklyCard.bottom
+    anchors.left: parent.left
+    anchors.right: parent.right
+    !tooltip: tr("Every task you complete this season climbs the Season Pass - 10 tiers, each with its own one-time reward waiting at the lamp. Resets at the start of next month.")
+
+  // Same section-header language as the Bounties tab (MarksHeader) - was a
+  // plain unstyled Label before, now matches the rest of the window.
+  MarksHeader
     id: rankingsLabel
-    font: verdana-11px-monochrome
-    color: #dfdfdf
-    anchors.top: prev.bottom
-    margin-top: 12
+    anchors.top: passCard.bottom
     anchors.left: parent.left
     anchors.right: parent.right
-    text: Top killers / rankings
+    color: #EFA83A
+    text: Top Hunters
 
+  // Same TextList default-background override as Catalog's catalogList
+  // above - the corelib #636363 default reads as a glaring mismatch against
+  // this tab's new dark frame.
   TextList
     id: rankingsList
+    background-color: #120c04
+    border-color: #4a453e
     anchors.top: prev.bottom
     margin-top: 4
     anchors.left: parent.left
@@ -530,169 +824,279 @@ TasksProgressPanel < Panel
     anchors.bottom: parent.bottom
     focusable: false
 
-OddsRow < Panel
-  height: 30
-  margin-bottom: 4
+// Tier block (Mizo 2026-08-04 overhaul - "mention all the possible odds...
+// all kinds of rewards you get through the task system"). Every task
+// reward tier gets its own block: the guaranteed grind payout, the richer
+// payout a rich completion (3x/day cap) adds on top, and that tier's Exp
+// Boost Wallet ceiling - all three genuinely DO scale with the task's own
+// reward tier (REWARD_POOL / WALLET_TIER_MAX in data/lib/tasks.lua).
+OddsTierBlock < Panel
+  height: 78
+  background-color: #1a1a1a
+  border-width: 1
+  border-color: #4a453e
+  padding: 6
+  margin-bottom: 6
 
   Label
     id: tierLabel
-    font: verdana-11px-rounded
-    width: 50
+    font: sans-bold-16px
+    height: 18
     anchors.top: parent.top
     anchors.left: parent.left
+    anchors.right: parent.right
     text: -
 
   Label
-    id: rewardText
+    id: grindText
     font: verdana-11px-rounded
-    color: #aaaaaa
-    anchors.top: parent.top
-    anchors.left: prev.right
-    anchors.right: parent.right
-    margin-left: 10
-    text: -
-
-  ProgressBar
-    id: sigilBar
-    background-color: #EF9F27
-    height: 16
-    anchors.top: prev.bottom
-    margin-top: 3
+    color: #F0E6D2
+    height: 14
+    anchors.top: tierLabel.bottom
+    margin-top: 4
     anchors.left: parent.left
     anchors.right: parent.right
-    phantom: false
+    text: -
+
+  Label
+    id: richText
+    font: verdana-11px-rounded
+    color: #6FBF6F
+    height: 14
+    anchors.top: prev.bottom
+    margin-top: 2
+    anchors.left: parent.left
+    anchors.right: parent.right
+    text: -
+
+  Label
+    id: walletText
+    font: verdana-11px-monochrome
+    color: #EFA83A
+    height: 14
+    anchors.top: prev.bottom
+    margin-top: 2
+    anchors.left: parent.left
+    anchors.right: parent.right
+    text: -
 
 TasksOddsPanel < Panel
-  padding-top: 8
-  layout: verticalBox
+  padding: 8
+  background-color: #171209
+  border-width: 1
+  border-color: #5c4a24
 
-  OddsRow
-    id: oddsRow1
-  OddsRow
-    id: oddsRow2
-  OddsRow
-    id: oddsRow3
-  OddsRow
-    id: oddsRow4
-  OddsRow
-    id: oddsRow5
+  FaqirMascot
+    id: faqirMascot
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
+
+  // Scrollable now (was a flat verticalBox that fit in place) - 5 tier
+  // blocks plus the sigil/sliver section run well past the old 5-thin-rows
+  // budget, same reasoning Catalog/Bounties already scroll for.
+  ScrollablePanel
+    id: oddsScroll
+    anchors.top: parent.top
+    margin-top: 66
+    anchors.left: parent.left
+    anchors.right: parent.right
+    anchors.bottom: parent.bottom
+    margin-right: 16
+    vertical-scrollbar: oddsScrollBar
+    layout: verticalBox
+
+    OddsTierBlock
+      id: oddsRow1
+    OddsTierBlock
+      id: oddsRow2
+    OddsTierBlock
+      id: oddsRow3
+    OddsTierBlock
+      id: oddsRow4
+    OddsTierBlock
+      id: oddsRow5
+
+    // Sigil/sliver drop odds are DELIBERATELY separate from the tier blocks
+    // above - unlike gold/premium/wallet-ceiling, they do NOT scale with the
+    // task's own reward tier. Every completion independently rolls all 5
+    // sigil tiers at their own fixed chance (data/lib/tasks.lua's
+    // rollSigilDrop loops tiers 1-5 every time, gating only 3-5 to rich) -
+    // conflating that with the task-tier blocks above would misrepresent
+    // the actual mechanic, so this reads as its own section instead.
+    MarksHeader
+      id: sigilHeader
+      color: #EFA83A
+      text: Sigil and Sliver Odds
+
+    MarksText
+      id: sigilText
+      height: 60
+      text: -
+
+  VerticalScrollBar
+    id: oddsScrollBar
+    anchors.top: oddsScroll.top
+    anchors.bottom: oddsScroll.bottom
+    anchors.right: parent.right
+    step: 14
+    pixels-scroll: true
 
 // ===== Marks tab (Faqir's Dagger, v2 only - the tab itself is only added
 // once a v2 payload arrives, so v1 sessions never see any of this) =====
 
-// terminus-10px is the ONLY fixed-glyph-width font in data/fonts
-// (fixed-glyph-width: 6) - the kris contract art is column-aligned ASCII and
-// falls apart in any proportional face. Height matches the font's declared
-// 12px exactly (terminus-10px.otfont says height: 12 - anything tighter
-// clips the bottom glyph row) so the art lines butt together and read as
-// one drawing instead of a spaced-out list.
-MarksLine < Label
-  font: terminus-10px
-  height: 12
-  color: #d8c8a0
-
+// Generic section-header style, shared beyond the Bounties tab (Progress
+// tab's "Top Hunters" label, Odds tab's sigil-odds header) - kept even
+// though the Bounties tab itself moved to MarksColumnHeader below for its
+// narrower per-column headers.
 MarksHeader < Label
   font: verdana-11px-rounded
   height: 18
   margin-top: 8
   margin-bottom: 2
 
+// Full-width notice line (level gate, etc.) - not column-specific. Left-
+// aligned by default (unchanged) since the Odds tab's multi-line sigil-odds
+// paragraph reuses this same style and reads better unindented per line.
 MarksText < Label
   font: verdana-11px-rounded
-  color: #aaaaaa
+  color: #B0A48C
   text-wrap: true
   multi-line: true
   height: 30
   margin-top: 4
   margin-bottom: 2
 
-// margin-top 4 is what separates the first assassin row from the kris art's
-// blade-tip line above it - the art lines themselves carry no bottom margin
-// (they must butt together to read as one drawing), so the row supplies the
-// gap from its own side.
-MarksDaggerRow < Panel
+// ── Side-by-side columns (Mizo 2026-08-04 full rework of the original
+// stacked-sections design: "HUNTED BY" and "HUNTED" boil down to the same
+// instruction either way - go kill this person - so two mirrored columns
+// read faster than two long stacked sections repeating the same visual
+// language). Left = who's hunting you, right = who you're hunting. fillMarks
+// sets header/note text+color per column (red/green) since the otui side is
+// otherwise identical between them. ──
+
+// width: 175 explicit on every MarksColumn child below (Mizo bug report
+// 2026-08-04: "Contract" cutting off behind the scrollbar) - a Label with no
+// declared width auto-sizes to fit ALL of its text on one line regardless of
+// text-wrap/multi-line, so it just grows past the column instead of
+// wrapping. Children of a box-layout parent can't use anchors.left/right:
+// parent.* to stretch to fill it either (gotcha #2) - an explicit width
+// matching MarksColumn's own is the only way to actually constrain them.
+// (Narrower than the column's own first pass, and the right column now
+// anchors to the real right edge instead of computing from the left
+// column's width - see targetColumn's own comment further down for why
+// that mattered even with this width already in place.)
+MarksColumnHeader < Label
+  font: verdana-11px-rounded
+  text-align: center
+  width: 175
+  height: 16
+  margin-bottom: 1
+
+// Short static rule per column, wraps to 2 lines rather than clipping -
+// this replaces the old per-card "Kill them first - steal their reward!"
+// line, which repeated once per hunter and read as redundant the moment
+// there was more than one (Mizo bug report 2026-08-04). Now it just lives
+// once, at the column level, same place both rules always were logically.
+MarksColumnNote < Label
+  font: verdana-11px-monochrome
+  color: #B0A48C
+  text-wrap: true
+  multi-line: true
+  text-align: center
+  width: 175
+  height: 24
+  margin-bottom: 5
+
+// One hunter/target row: a small portrait, the name, and "Vocation - Lvl N"
+// underneath. fillBountyRow (tasks.lua) pre-truncates both lines in Lua so a
+// long character name or vocation can never overflow into the neighbouring
+// column - there's no native text-ellipsis in this OTUI fork to lean on, and
+// two columns side by side leaves far less width per row than the old
+// full-width cards had.
+MarksRow < Panel
+  width: 175
   height: 36
-  margin-top: 4
-  margin-bottom: 2
+  margin-bottom: 3
 
   UICreature
     id: creature
     phantom: true
     size: 32 32
-    anchors.verticalCenter: parent.verticalCenter
     anchors.left: parent.left
-    margin-left: 6
+    anchors.verticalCenter: parent.verticalCenter
 
   Label
-    id: name
+    id: nameplate
     font: verdana-11px-rounded
-    color: #FF6666
-    anchors.verticalCenter: parent.verticalCenter
-    anchors.left: creature.right
-    anchors.right: parent.right
-    margin-left: 12
-
-// The wanted poster (Mizo): the prey's ACTUAL character outfit rendered via
-// UICreature - same technique OfferSlot uses for monster outfits and
-// fillActive's Faqir materialize - with the header above and name+level in
-// contract green beside it.
-MarksPoster < Panel
-  height: 112
-  background-color: #1a1a1a
-  border-width: 1
-  border-color: #2e5c2e
-  padding: 6
-  margin-bottom: 4
-
-  UICreature
-    id: creature
-    phantom: true
-    size: 64 64
-    anchors.verticalCenter: parent.verticalCenter
-    anchors.left: parent.left
-    margin-top: -6
-    margin-left: 13
-
-  // sans-bold-16px (20px tall) rather than the window's verdana-11px: this
-  // line IS the poster - it should shout the way a real wanted bill does,
-  // and it's the only place in the window that earns display type.
-  Label
-    id: wantedHeader
-    font: sans-bold-16px
-    color: #E24B4A
-    height: 20
+    color: #F0E6D2
     anchors.top: parent.top
-    margin-top: 8
-    anchors.left: creature.right
+    margin-top: 2
+    anchors.left: prev.right
+    margin-left: 6
     anchors.right: parent.right
-    margin-left: 18
-    text: WANTED - DEAD
-
-  Label
-    id: preyName
-    font: verdana-11px-rounded
-    color: #66CC66
-    anchors.top: prev.bottom
-    margin-top: 8
-    anchors.left: creature.right
-    anchors.right: parent.right
-    margin-left: 18
+    height: 14
     text: -
 
   Label
-    id: badge
-    font: verdana-11px-rounded
-    color: #FFD700
+    id: subline
+    font: verdana-11px-monochrome
+    color: #B0A48C
     anchors.top: prev.bottom
-    margin-top: 6
-    anchors.left: creature.right
+    margin-top: 1
+    anchors.left: prev.left
     anchors.right: parent.right
-    margin-left: 18
-    visible: false
-    text: Two daggers, one grave.
+    height: 12
+    text: -
 
+// Muted placeholder row shown in a column with nothing in it - "always show
+// something" rather than an empty gap under the header (same rule the
+// Active Task tab's 3-slot design follows).
+MarksColumnEmpty < Label
+  font: verdana-11px-monochrome
+  color: #55534c
+  text-align: center
+  text-wrap: true
+  multi-line: true
+  width: 175
+  height: 20
+  margin-top: 4
+
+MarksColumn < Panel
+  width: 175
+  layout:
+    type: verticalBox
+    fit-children: true
+
+  MarksColumnHeader
+    id: columnHeader
+
+  MarksColumnNote
+    id: columnNote
+
+  Panel
+    id: rowsBox
+    width: 175
+    layout:
+      type: verticalBox
+      fit-children: true
+
+// Internal id stays "Marks"/"marks" throughout this file and tasks.lua -
+// only the player-facing tab label changed to "Bounties" (Mizo 2026-08-04,
+// via AskUserQuestion: clearer to any MMO player than "Marks"). Renaming
+// every internal identifier too would be a much bigger, purely-cosmetic
+// diff for zero player-visible gain - not worth the churn.
 TasksMarksPanel < Panel
-  padding-top: 8
+  padding: 8
+  background-color: #171209
+  border-width: 1
+  border-color: #5c4a24
+
+  FaqirMascot
+    id: faqirMascot
+    anchors.top: parent.top
+    anchors.left: parent.left
+    anchors.right: parent.right
 
   // Fixed footer outside the scroll, same reasoning as the Offers tab's
   // Shuffle: a whole-tab action should never need scrolling to find.
@@ -707,13 +1111,42 @@ TasksMarksPanel < Panel
   ScrollablePanel
     id: marksScroll
     anchors.top: parent.top
+    margin-top: 66
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: bladesBoard.top
     margin-right: 16
     margin-bottom: 8
     vertical-scrollbar: marksScrollBar
-    layout: verticalBox
+
+    // Full-tab replacement message (level gate) - hides both columns below
+    // when shown. Not column-specific, so it stays outside MarksColumn.
+    MarksText
+      id: gateMessage
+      anchors.top: parent.top
+      anchors.left: parent.left
+      anchors.right: parent.right
+      visible: false
+
+    MarksColumn
+      id: threatColumn
+      anchors.top: parent.top
+      anchors.left: parent.left
+
+    // anchors.right (not threatColumn.right + a fixed margin) - Mizo bug
+    // report 2026-08-04 x2: "Contract" still cutting off behind the
+    // scrollbar even after the note Label itself got a width. The text
+    // WAS wrapping correctly inside its own 185px - the column ITSELF was
+    // positioned too far right (185+10+185=380px against a scroll area
+    // that's narrower than that once the scrollbar's own margin-right:16
+    // is subtracted), so its right edge sat partially under the
+    // scrollbar regardless of what the label inside it did. Anchoring to
+    // the real right edge is correct regardless of exact pixel budget;
+    // the narrower width below (was 185) just adds breathing room.
+    MarksColumn
+      id: targetColumn
+      anchors.top: parent.top
+      anchors.right: parent.right
 
   VerticalScrollBar
     id: marksScrollBar

@@ -86,6 +86,64 @@ function onFoodOpcode(protocol, opcode, buffer)
   updateHungryIcon()
 end
 
+-- Exp Boost Wallet (Mizo 2026-08-04, see Player.sendExpWallet on the server).
+-- Payload is "<minutes>,<cap>". Born hidden in the otui - only shown once
+-- this fires at least once, so a v1-era server (or a client reload before
+-- the first login push arrives) never shows a stuck "0/0" row.
+local EXPWALLET_OPCODE = 76
+
+function updateExpWallet(minutes, cap)
+  if not skillsWindow then return end
+  -- getChildById is NOT recursive in this engine - expWallet sits several
+  -- levels deep inside the scroll panel, same reason every other row lookup
+  -- in this file (limitBreak, lbsPips, the plain skill rows) uses this too.
+  local panel = skillsWindow:recursiveGetChildById('expWallet')
+  if not panel then return end
+  panel:setVisible(true)
+
+  -- 2853/2854 are the CLIENT ids for server items 1987 "bag" / 1988
+  -- "backpack" (items.otb maps them differently - see
+  -- [[reference-client-vs-server-item-ids]]; passing a SERVER id here once
+  -- rendered an unrelated item - looked like a coffin - with no error,
+  -- verified the fix by rendering both through itemsprite.php and comparing).
+  -- Swap sells "it got bigger" the moment the shop expansion is bought -
+  -- WALLET_DEFAULT_CAP is 120 server-side, so anything above it means
+  -- expanded. No new art needed; > rather than >= in case a future tier
+  -- ever sits between today's two values.
+  local expanded = cap > 120
+  local bag = panel:getChildById('expWalletBag')
+  bag:setItemId(expanded and 2854 or 2853)
+  bag:setShowCount(false)
+
+  panel:getChildById('expWalletText'):setText(('%d / %d min (+30%%)'):format(minutes, cap))
+
+  local fill = panel:getChildById('expWalletFill')
+  if fill then
+    fill:setPercent(cap > 0 and math.floor(math.min(100, minutes * 100 / cap)) or 0)
+  end
+
+  -- Same fix as the Faqir's Tasks Progress tab's propagateCardTooltip
+  -- (2026-08-04, "can't see the mouse hover effect" on both): tooltip.lua's
+  -- g_tooltip fires per-widget on whichever widget is actually under the
+  -- mouse, no parent fallback - the bag/badge/text/bar all cover the panel
+  -- the !tooltip: was set on in skills.otui, so hovering the visible
+  -- content never actually hit the panel itself.
+  local tip = panel:getTooltip()
+  if tip and tip ~= '' then
+    bag:setTooltip(tip)
+    panel:getChildById('expWalletBadgeBg'):setTooltip(tip)
+    panel:getChildById('expWalletBadge'):setTooltip(tip)
+    panel:getChildById('expWalletText'):setTooltip(tip)
+    if fill then fill:setTooltip(tip) end
+  end
+end
+
+function onExpWalletOpcode(protocol, opcode, buffer)
+  local minutes, cap = buffer:match('^(%d+),(%d+)$')
+  if not minutes then return end
+  updateExpWallet(tonumber(minutes), tonumber(cap))
+end
+
 -- Self-rescheduling 1s local ticker (same proven pattern as limitBreakTick
 -- below): only exists so the icon appears promptly once ticks run out between
 -- server pushes (login/eat/30s heartbeat), instead of waiting up to 30s.
@@ -611,6 +669,7 @@ function init()
   pcall(ProtocolGame.registerExtendedOpcode, LIMITBREAK_GAUGE_OPCODE, onLimitBreakGaugeOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, REALEXP_OPCODE, onRealExpOpcode)
   pcall(ProtocolGame.registerExtendedOpcode, FOOD_OPCODE, onFoodOpcode)
+  pcall(ProtocolGame.registerExtendedOpcode, EXPWALLET_OPCODE, onExpWalletOpcode)
 
   connect(LocalPlayer, {
     onExperienceChange = onExperienceChange,
@@ -674,6 +733,7 @@ function terminate()
   pcall(ProtocolGame.unregisterExtendedOpcode, LIMITBREAK_GAUGE_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, REALEXP_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, FOOD_OPCODE)
+  pcall(ProtocolGame.unregisterExtendedOpcode, EXPWALLET_OPCODE)
 
   skillsWindow:destroy()
   skillsButton:destroy()

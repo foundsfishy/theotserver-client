@@ -30,6 +30,7 @@ local tabPanels = {}
 -- is showing without re-deriving it from the tab bar's children.
 local catalogTab = nil
 local progressTab = nil
+local oddsTab = nil
 -- Marks tab (Faqir's Dagger) is CREATED LAZILY on the first v2 state push -
 -- a v1 session never has dagger/contract data, so it never sees the tab at
 -- all rather than seeing a permanently-empty one.
@@ -80,6 +81,41 @@ local flashedActiveIds = {}
 -- normally every push, only the position is held.
 local pendingMoveIds = {}
 
+-- Last known progress per active task id (Mizo 2026-08-04 - "make it feel
+-- alive") - fillActive rebuilds every ActiveTaskCard from scratch on each
+-- push, so there's no persistent widget to diff against; this table is what
+-- lets a fresh card know whether ITS number just went up since last time.
+local lastKillCounts = {}
+
+-- Brief flash on a kill-count update - same step-blink SHAPE as
+-- flashActiveOffer below (color, not border: this is a number ticking up,
+-- not a row that moved), 2 blinks rather than 3 since this fires far more
+-- often (every kill vs. once per accept) and needs to stay unobtrusive.
+-- Color pass (Mizo 2026-08-04): the window's chrome (#171209/#5c4a24) stayed
+-- consistent across all 6 tabs, but everything built on top of it drifted -
+-- 4 golds, 3 whites, 4 muted greys, 2 reds, 3 greens all doing the same job
+-- with slightly different hex, accumulated one isolated edit at a time. This
+-- collapses each family to one value (still spread across each constant's
+-- own point of use rather than one central table, to match how this file
+-- already organizes color constants - only the VALUES changed, not the
+-- pattern). KILL_FLASH_COLOR stays separate - a transient flash genuinely
+-- warrants a brighter, more attention-grabbing tone than the resting green.
+local KILL_FLASH_COLOR = '#a6e08c'
+local KILL_FLASH_NORMAL = '#F0E6D2'
+local function flashKillCount(label)
+  removeEvent(label.killFlashEvent)
+  local total = 2 * 2
+  local function step(n)
+    if n > total then
+      label:setColor(KILL_FLASH_NORMAL)
+      return
+    end
+    label:setColor(n % 2 == 1 and KILL_FLASH_COLOR or KILL_FLASH_NORMAL)
+    label.killFlashEvent = scheduleEvent(function() step(n + 1) end, 150)
+  end
+  step(1)
+end
+
 -- Sixth attempt at this indicator (Mizo 2026-07-30 x6):
 --   1. a 1px border flash alone - too subtle, easy to miss.
 --   2. a blinking "^ MOVED UP" text badge alone - ugly ASCII chrome.
@@ -95,7 +131,7 @@ local pendingMoveIds = {}
 -- there for a while). Border still reverts to normal explicitly at the end.
 local FLASH_BLINKS = 3
 local FLASH_STEP_MS = 220
-local GLOW_BORDER = '#FAC775'
+local GLOW_BORDER = '#FFC968'
 local NORMAL_BORDER = '#4a453e'
 
 local function flashActiveOffer(slot, onDone)
@@ -115,7 +151,7 @@ end
 
 local SIGIL_CHANCE_BY_TIER = { [1] = 40, [2] = 18, [3] = 40, [4] = 15, [5] = 5 }
 local TIER_COLOR = {
-  [1] = '#639922', [2] = '#378ADD', [3] = '#7F77DD', [4] = '#EF9F27', [5] = '#E24B4A',
+  [1] = '#6FBF6F', [2] = '#378ADD', [3] = '#7F77DD', [4] = '#EFA83A', [5] = '#E85A5A',
 }
 
 -- Same tier identity, brightened for the Catalog list specifically. TIER_COLOR
@@ -131,15 +167,20 @@ local TIER_COLOR = {
 -- so the empty list reads as ghosted content. Kept in step with the live row
 -- format - when rows gained "- kill N - lvl N+" these did too, otherwise the
 -- skeleton is visibly shorter than what replaces it and the list jumps.
+-- Trimmed to 4 (was 8, then 5 - Mizo 2026-08-04 x2) plus a tapering dot fade
+-- - the gibberish names carry the "content lives here" read on their own; a
+-- full list of them all the way down read as noisy repetition, so the tail
+-- now trails off into shorter and shorter dot runs instead, like the
+-- skeleton itself is fading out rather than just stopping.
 local CATALOG_GHOST_ROWS = {
   '[--] Nnnrrmm Vhaalk (Tier - - kill -- - lvl --+)',
-  '[--] Skrenn (Tier - - kill -- - lvl --+)',
   '[--] Ghorrum Slaath (Tier - - kill -- - lvl --+)',
   '[--] Vaelmirr Dhun (Tier - - kill -- - lvl --+)',
   '[--] Prakk (Tier - - kill -- - lvl --+)',
-  '[--] Ithreneth Corr (Tier - - kill -- - lvl --+)',
-  '[--] Mmurgash (Tier - - kill -- - lvl --+)',
-  '[--] Xhalvinn Traak (Tier - - kill -- - lvl --+)',
+  ('.'):rep(46),
+  ('.'):rep(34),
+  ('.'):rep(22),
+  ('.'):rep(10),
 }
 
 local CATALOG_TIER_COLOR = {
@@ -230,8 +271,8 @@ end
 --
 --   v2|slots:<1-3>|<active;active;... or none>|<offers as v1>|<wish or -1>
 --     |gear:<0/1>|wallet:<minutes>,<cap>
---     |daggers:<n>[,<name>,<level>,<lookType>,<head>,<body>,<legs>,<feet>,<addons>]*
---     |contract:<name>,<level>,<lookType>,<head>,<body>,<legs>,<feet>,<addons> or -
+--     |daggers:<n>[,<name>,<level>,<lookType>,<head>,<body>,<legs>,<feet>,<addons>,<vocation>]*
+--     |contract:<name>,<level>,<lookType>,<head>,<body>,<legs>,<feet>,<addons>,<vocation> or -
 --     |shopoffer:<taskslots offer id>
 --
 -- Parsed segment-by-segment on '|': labelled segments are recognised by their
@@ -266,11 +307,11 @@ local function parseV2State(buffer)
       local flat = rest:gsub(';', ',')
       local count = tonumber(flat:match('^(%d+)')) or 0
       local entriesStr = flat:match('^%d+,(.*)$') or ''
-      for name, level, lookType, head, body, legs, feet, addons in
-          entriesStr:gmatch('([^,]+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)') do
+      for name, level, lookType, head, body, legs, feet, addons, vocation in
+          entriesStr:gmatch('([^,]+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),([^,]+)') do
         if #s.daggers < count then
           s.daggers[#s.daggers + 1] = {
-            name = name, level = tonumber(level),
+            name = name, level = tonumber(level), vocation = vocation,
             outfit = parseOutfit(lookType, head, body, legs, feet, addons),
           }
         end
@@ -278,11 +319,11 @@ local function parseV2State(buffer)
     elseif label == 'contract' then
       if rest ~= '' and rest ~= '-' then
         local flat = rest:gsub(';', ',')
-        local name, level, lookType, head, body, legs, feet, addons =
-          flat:match('^([^,]+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+)$')
+        local name, level, lookType, head, body, legs, feet, addons, vocation =
+          flat:match('^([^,]+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),(%d+),([^,]+)$')
         if name then
           s.contract = {
-            name = name, level = tonumber(level),
+            name = name, level = tonumber(level), vocation = vocation,
             outfit = parseOutfit(lookType, head, body, legs, feet, addons),
           }
         end
@@ -335,6 +376,12 @@ function onTaskStateOpcode(protocol, opcode, buffer)
     currentActiveIds[task.id] = true
   end
 
+  -- Bar-button alert BEFORE the tab-specific fills below: it must fire even
+  -- on a v1 push (daggers/contract just stay empty forever there, so the
+  -- diff never triggers) and even if the window has never been opened this
+  -- session - see checkTasksBarAlert's own comment.
+  checkTasksBarAlert(state)
+
   -- activeList is passed to fillOffers too: accepted tasks STAY in the offer
   -- slots (Tasks.acceptTask never clears them), so Offers needs to know which
   -- rows are the ones being worked.
@@ -378,24 +425,45 @@ function onTaskCatalogOpcode(protocol, opcode, buffer)
   fillCatalog(tonumber(costStr), matches)
 end
 
--- 6 pipe-joined fields: streakText|weeklyText|weeklyCount|weeklyTarget|
--- passText|rankingText (rankingText may itself contain real newlines - it's
--- last, so that's safe).
+-- 14 pipe-joined fields (Mizo 2026-08-04 Progress tab overhaul - was 6):
+-- streakText|weeklyText|weeklyCount|weeklyTarget|passText|streakDays|
+-- freezeTokens|freezeCap|passTier|passMaxTier|passSeasonTasks|
+-- passPrevThreshold|passNextThreshold|rankingText. The *Text fields are the
+-- old pre-formatted sentences (kept in case anything still wants them
+-- verbatim); everything from streakDays on is new raw numbers so the client
+-- can build real bars/pips instead of only ever having a sentence to print
+-- as-is. rankingText may itself contain real newlines - it's last, so
+-- that's safe (Lua's "." matches newlines too).
 function onTaskProgressOpcode(protocol, opcode, buffer)
   -- Numeric fields accept an optional decimal tail ("3" or "3.0"). The server
   -- pins them to integers, but a Lua storage value can surface as a float and
   -- a strict %d+ here silently blanked the ENTIRE tab over one stray ".0" -
   -- too brittle for a display-only path.
-  local streakText, weeklyText, weeklyCount, weeklyTarget, passText, rankingText =
-    buffer:match('^(.-)|(.-)|([%d%.]+)|([%d%.]+)|(.-)|(.*)$')
+  local streakText, weeklyText, weeklyCount, weeklyTarget, passText,
+        streakDays, freezeTokens, freezeCap,
+        passTier, passMaxTier, passSeasonTasks, passPrevThreshold, passNextThreshold,
+        rankingText =
+    buffer:match('^(.-)|(.-)|([%d%.]+)|([%d%.]+)|(.-)|'
+      .. '([%d%.]+)|([%d%.]+)|([%d%.]+)|'
+      .. '([%d%.]+)|([%d%.]+)|([%d%.]+)|([%d%.]+)|([%d%.]+)|(.*)$')
   if not streakText then return end
+
+  local function n(v) return math.floor(tonumber(v) or 0) end
 
   fillProgress({
     streakText = streakText,
     weeklyText = weeklyText,
-    weeklyCount = math.floor(tonumber(weeklyCount) or 0),
-    weeklyTarget = math.floor(tonumber(weeklyTarget) or 0),
+    weeklyCount = n(weeklyCount),
+    weeklyTarget = n(weeklyTarget),
     passText = passText,
+    streakDays = n(streakDays),
+    freezeTokens = n(freezeTokens),
+    freezeCap = n(freezeCap),
+    passTier = n(passTier),
+    passMaxTier = n(passMaxTier),
+    passSeasonTasks = n(passSeasonTasks),
+    passPrevThreshold = n(passPrevThreshold),
+    passNextThreshold = n(passNextThreshold),
     rankingText = rankingText,
   })
 end
@@ -458,6 +526,105 @@ function setTaskIcon()
   tasksButton:getChildById('icon'):setItemId(3231)
 end
 
+-- ============================================================================
+-- Bar-button "unread mark" alert (Mizo 2026-08-04): a dagger landing on you,
+-- or a fresh PvP Hunt contract, are things a player needs to know about EVEN
+-- IF they've never opened this window - so this is driven straight from
+-- onTaskStateOpcode, not fillMarks (which no-ops until the Marks tab exists,
+-- i.e. after the window's first open - exactly the case this alert exists
+-- for). Two phases, both reusing shapes already proven in this file: a fast
+-- attention-grabbing blink (same step-blink structure as flashActiveOffer
+-- above - 5 design iterations landed there, no need to reinvent it) for 3s,
+-- then a hand-off into a slow steady breathe matching the Marks tab label's
+-- own existing 700ms danger-pulse cadence, so "still unread" reads as one
+-- consistent visual language across the window rather than two different
+-- pulse speeds meaning the same thing.
+-- ============================================================================
+local TASKBAR_ALERT_COLOR = '#E85A5A' -- matches MARKS_RED below
+local TASKBAR_NORMAL_BORDER = '#EFA83A' -- TaskBarButton's own resting border
+local TASKBAR_ALERT_BLINKS = 6 -- 12 half-steps
+local TASKBAR_ALERT_STEP_MS = 250 -- 12 * 250 = 3000ms fast phase
+local TASKBAR_ALERT_PULSE_MS = 700 -- matches marksTabPulseEvent's cadence
+
+local tasksBarUnread = false
+local tasksBarAlertEvent = nil
+-- Last known counts, diffed on every push to fire only on a genuinely NEW
+-- mark/contract - the server resends both every opcode 72, not just on
+-- change. Deliberately NOT reset on offline() (same reasoning as
+-- flashedActiveIds above: module-local Lua state survives a plain
+-- logout/login, so a standing dagger doesn't re-trigger the fast blink on
+-- every relog - see checkTasksBarAlert's "resume, don't replay" branch).
+local knownDaggerCount = 0
+local knownContractName = nil
+
+-- playFastPhase=true for a brand-new event (full 3s attention grab, then
+-- settle); false to resume straight into the steady breathe (an
+-- already-unread mark surviving a relog - see checkTasksBarAlert).
+local function startTasksBarAlert(playFastPhase)
+  if not tasksButton then return end
+  if tasksBarUnread and tasksBarAlertEvent then return end -- already pulsing
+  tasksBarUnread = true
+  removeEvent(tasksBarAlertEvent)
+
+  local function settlePulse()
+    local lit = true
+    local function pulse()
+      lit = not lit
+      tasksButton:setBorderColor(lit and TASKBAR_ALERT_COLOR or TASKBAR_NORMAL_BORDER)
+      tasksBarAlertEvent = scheduleEvent(pulse, TASKBAR_ALERT_PULSE_MS)
+    end
+    pulse()
+  end
+
+  if not playFastPhase then
+    settlePulse()
+    return
+  end
+
+  local total = TASKBAR_ALERT_BLINKS * 2
+  local function fastStep(n)
+    if n > total then
+      settlePulse()
+      return
+    end
+    tasksButton:setBorderColor(n % 2 == 1 and TASKBAR_ALERT_COLOR or TASKBAR_NORMAL_BORDER)
+    tasksBarAlertEvent = scheduleEvent(function() fastStep(n + 1) end, TASKBAR_ALERT_STEP_MS)
+  end
+  fastStep(1)
+end
+
+-- Real acknowledgment: the button was actually clicked (see toggle()). Clears
+-- the unread flag itself, unlike offline()'s cleanup which only silences the
+-- visual for the disconnected session.
+local function stopTasksBarAlert()
+  removeEvent(tasksBarAlertEvent)
+  tasksBarAlertEvent = nil
+  tasksBarUnread = false
+  if tasksButton then tasksButton:setBorderColor(TASKBAR_NORMAL_BORDER) end
+end
+
+-- GLOBAL, not local: onTaskStateOpcode (declared earlier in this file, same
+-- reason fillOffers/fillActive/fillMarks below are also global) calls this
+-- directly - a local here would be textually invisible to it and resolve to
+-- nil at call time despite parsing fine.
+function checkTasksBarAlert(state)
+  local daggerCount = #(state.daggers or {})
+  local contractName = state.contract and state.contract.name or nil
+  local isNew = (daggerCount > knownDaggerCount)
+    or (contractName ~= nil and contractName ~= knownContractName)
+  knownDaggerCount = daggerCount
+  knownContractName = contractName
+
+  if isNew then
+    startTasksBarAlert(true)
+  elseif tasksBarUnread and not tasksBarAlertEvent then
+    -- Unread mark surviving a relog (offline() stopped the pulse loop but
+    -- left tasksBarUnread true) - resume the steady breathe directly, no
+    -- need to replay the fast blink for something already known about.
+    startTasksBarAlert(false)
+  end
+end
+
 function init()
   connect(g_game, { onGameStart = setTaskIcon, onGameEnd = offline })
 
@@ -491,11 +658,20 @@ function init()
   tabPanels.progress = g_ui.createWidget('TasksProgressPanel')
   tabPanels.odds     = g_ui.createWidget('TasksOddsPanel')
 
+  -- Static resting lines (Mizo 2026-08-04) - Faqir now greets every tab, not
+  -- just Active Task. Active Task itself wires its own mascot inside
+  -- fillActive (its line reacts to real state); these four never change, so
+  -- one-time setup here is enough.
+  setupFaqirMascot(tabPanels.offers, 'Pick your prey from these offers, hunter.')
+  setupFaqirMascot(tabPanels.catalog, 'Search my ledger for any task you desire.')
+  setupFaqirMascot(tabPanels.progress, 'Your deeds are being counted, hunter.')
+  setupFaqirMascot(tabPanels.odds, 'Fortune favors the bold - see what awaits.')
+
   tasksTabBar:addTab(tr('Offers'), tabPanels.offers)
   tasksTabBar:addTab(tr('Active Task'), tabPanels.active)
   catalogTab = tasksTabBar:addTab(tr('Catalog'), tabPanels.catalog)
   progressTab = tasksTabBar:addTab(tr('Progress'), tabPanels.progress)
-  tasksTabBar:addTab(tr('Reward Odds'), tabPanels.odds)
+  oddsTab = tasksTabBar:addTab(tr('Odds'), tabPanels.odds)
 
   -- HUNT TAB HIDDEN (2026-07-29, Mizo): the feature is unbuilt, so shipping a
   -- tab of static placeholder text to live players advertises something that
@@ -604,6 +780,8 @@ function terminate()
   -- and a still-scheduled pulse tick would poke a destroyed widget.
   removeEvent(marksTabPulseEvent)
   marksTabPulseEvent = nil
+  removeEvent(tasksBarAlertEvent)
+  tasksBarAlertEvent = nil
   if tasksWindow then tasksWindow:destroy() end
   tasksButton = nil
   tasksWindow = nil
@@ -627,6 +805,13 @@ function offline()
   removeEvent(marksTabPulseEvent)
   marksTabPulseEvent = nil
   if marksTab and marksTabDefaultColor then marksTab:setColor(marksTabDefaultColor) end
+  -- Bar-button alert: stop the VISUAL only (tasksBarUnread deliberately
+  -- survives - an un-acknowledged mark should resume its steady breathe on
+  -- the next login's first push via checkTasksBarAlert, not silently
+  -- disappear just because the client disconnected).
+  removeEvent(tasksBarAlertEvent)
+  tasksBarAlertEvent = nil
+  if tasksButton then tasksButton:setBorderColor(TASKBAR_NORMAL_BORDER) end
   lastState = nil
   currentActiveIds = {}
   -- flashedActiveIds is deliberately NOT reset here. Module-local Lua state
@@ -646,6 +831,11 @@ function toggle()
     tasksWindow:raise()
     tasksWindow:focus()
     tasksButton:setOn(true)
+    -- Real acknowledgment: they actually clicked to open the window, so the
+    -- mark/contract that triggered the alert has been seen. Stop the pulse
+    -- and clear tasksBarUnread for good (unlike offline()'s cleanup, which
+    -- only silences the visual without acknowledging anything).
+    stopTasksBarAlert()
     -- Payload v2 handshake, once per connection: after this the server
     -- answers every opcode 72 push for the session in the v2 shape. A v1
     -- server just ignores the unknown action (it politely refuses unknown
@@ -748,13 +938,13 @@ function fillOffers(offers, wishTask, activeList, slots)
         -- State is carried by CONTRAST, not by a new colour: with the slots
         -- full the other rows dim and the active ones stay at full
         -- brightness. Deliberately not "tint the accepted row green" - Tier 1
-        -- already IS green (#639922), so a green state marker would be
+        -- already IS green (#6FBF6F), so a green state marker would be
         -- indistinguishable from tier language on exactly the rows most
         -- likely to be accepted.
         if isActiveOffer then
           slot:setOpacity(1.0)
-          slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
-          slot:getChildById('info'):setColor('#aaaaaa')
+          slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#F0E6D2')
+          slot:getChildById('info'):setColor('#B0A48C')
           -- The Accept button here can never work (the engine refuses a
           -- re-accept), and it is the biggest element in the row - so it
           -- becomes the live kill count instead of dead disabled chrome.
@@ -780,8 +970,8 @@ function fillOffers(offers, wishTask, activeList, slots)
             slot:getChildById('name'):setColor('#5a5a5a')
             slot:getChildById('info'):setColor('#4a4a4a')
           else
-            slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#ffffff')
-            slot:getChildById('info'):setColor('#aaaaaa')
+            slot:getChildById('name'):setColor(TIER_COLOR[offer.tier] or '#F0E6D2')
+            slot:getChildById('info'):setColor('#B0A48C')
           end
           acceptBtn:setText(tr('Accept'))
           -- Disabled with no free slot because the ENGINE refuses it -
@@ -797,7 +987,7 @@ function fillOffers(offers, wishTask, activeList, slots)
         slot:setOpacity(1.0)
         acceptBtn:setText(tr('Accept'))
         slot:getChildById('name'):setText(tr('No offer'))
-        slot:getChildById('name'):setColor('#888888')
+        slot:getChildById('name'):setColor('#55534c')
         slot:getChildById('info'):setText('-')
         rerollBtn:setText(tr('Reroll'))
         acceptBtn:setEnabled(false)
@@ -889,16 +1079,60 @@ function fillOffers(offers, wishTask, activeList, slots)
 end
 
 -- ============================================================================
+-- Faqir the Wise's mascot (Mizo 2026-08-04) - shared by EVERY tab in this
+-- window now, not just Active Task where he started. Outfit lives here
+-- (data/npc/Faqir the Wise.xml on the server - outfits aren't remapped
+-- server/client like item ids are, so this look type is safe to pass
+-- straight to setOutfit()) since this was the first tab to use him.
+-- ============================================================================
+local FAQIR_OUTFIT = { type = 103, head = 20, body = 30, legs = 40, feet = 50, addons = 0 }
+local FAQIR_MATERIALIZE_MS = 500
+-- 40/16 (was 128/48 pre-redesign, briefly 32/12 - too small to notice the
+-- grow-in at all, per Mizo feedback 2026-08-04): matches faqirCreature's
+-- OTUI size (40x40, standing at the top of the counter frame - see
+-- TasksActivePanel), big enough for the materialize effect to actually read.
+local FAQIR_SIZE = 40
+local FAQIR_START_SIZE = 16
+
+-- Click Faqir for a random line (Mizo 2026-08-04) - cheap personality: no
+-- state to track beyond "which line", and it can never desync from the real
+-- state text since the NEXT genuine push (state change, tab refresh) just
+-- overwrites it the normal way through fillOffers/fillActive/fillMarks/etc.
+local FAQIR_CLICK_LINES = {
+  "Careful out there, hunter.",
+  "Gold and glory favor the bold.",
+  "I have seen many hunters. Few return rich.",
+  "The Blades Board never forgets a name.",
+  "Ask, and I may answer - if I feel like it.",
+  "Every task tells me something about you.",
+}
+
+-- Wires outfit + the click-quip handler for one tab's mascot instance.
+-- staticLine (optional) sets its resting text immediately for tabs whose
+-- line never changes with state (Catalog, Odds); tabs that DO react to
+-- their own data (Active Task, Bounties) set text themselves in their own
+-- fill function instead and pass nothing here. GLOBAL, not local: called
+-- from init()/ensureMarksTab(), both declared EARLIER in this file - a
+-- local here would be textually invisible to them (same reasoning as
+-- checkTasksBarAlert above).
+function setupFaqirMascot(panel, staticLine)
+  local mascot = panel:getChildById('faqirMascot')
+  if not mascot then return nil end
+  local creature = mascot:getChildById('faqirCreature')
+  creature:setOutfit(FAQIR_OUTFIT)
+  if staticLine then
+    mascot:getChildById('faqirBubbleText'):setText(tr(staticLine))
+  end
+  mascot.onClick = function()
+    mascot:getChildById('faqirBubbleText'):setText(tr(FAQIR_CLICK_LINES[math.random(#FAQIR_CLICK_LINES)]))
+  end
+  return mascot
+end
+
+-- ============================================================================
 -- Active task tab - activeList is {} (no tasks, or nothing pushed yet) or up
 -- to three {id, name, progress, target, outfit} entries (v1: exactly one).
 -- ============================================================================
--- Faqir the Wise's real outfit (data/npc/Faqir the Wise.xml on the server) -
--- outfits aren't remapped server/client like item ids are, so this look type
--- is safe to pass straight to setOutfit().
-local FAQIR_OUTFIT = { type = 103, head = 20, body = 30, legs = 40, feet = 50, addons = 0 }
-local FAQIR_MATERIALIZE_MS = 500
-local FAQIR_SIZE = 128
-local FAQIR_START_SIZE = 48
 
 -- No real warp/dissolve shader is available here (this client's outfit
 -- shaders only expose a scroll-offset uniform the engine drives itself, not
@@ -925,36 +1159,76 @@ local function materializeFaqir(creature)
   step(0)
 end
 
--- Only replay the materialize animation on the ACTUAL transition into the
--- empty state, not every opcode 72 push while it's already showing (the
--- server can re-send state for unrelated reasons - the window shouldn't
--- restart the animation every time that happens while the player is just
--- sitting on the tab).
-local wasShowingEmptyState = nil
+-- Faqir's materialize entrance now plays ONCE, the first time the tab is
+-- ever filled this session, rather than on every empty<->busy transition -
+-- he's persistent chrome now (see fillActive), not a reveal tied to the
+-- empty state, so replaying it per-transition would fire constantly as tasks
+-- get accepted/dropped/completed.
+local faqirMaterialized = nil
 
+-- Always renders exactly 3 slot rows in this fixed order: busy tasks first
+-- (ActiveTaskCard), then owned-but-idle slots (TaskSlotEmpty) up to s.slots,
+-- then locked slots (TaskSlotLocked) for the rest - so the row always reads
+-- as "3 total, this many are yours, this many are still for sale" at a
+-- glance instead of just shrinking when a task finishes.
 function fillActive(activeList, s)
   activeList = activeList or {}
   s = s or {}
   local panel = tabPanels.active
   local listPanel = panel:getChildById('activeList')
-  local faqirBubble = panel:getChildById('faqirBubble')
-  local faqirCreature = panel:getChildById('faqirCreature')
+  local mascot = panel:getChildById('faqirMascot')
+  local faqirCreature = mascot:getChildById('faqirCreature')
+  -- faqirBubbleText is a DIRECT child of faqirMascot again (no separate
+  -- bordered bubble panel - it floats plain above his head now, inside the
+  -- counter frame's own border, see TasksActivePanel in the otui).
+  local faqirText = mascot:getChildById('faqirBubbleText')
   local unlockBtn = panel:getChildById('unlockSlots')
-  local walletLabel = panel:getChildById('walletLabel')
+
+  setupFaqirMascot(panel) -- outfit + click-quip handler (idempotent, cheap)
+  if not faqirMaterialized then
+    materializeFaqir(faqirCreature)
+    faqirMaterialized = true
+  end
+
+  -- Plain, classic-Tibia-NPC phrasing (Mizo feedback 2026-08-04: the first
+  -- pass read stiffer/more like a UI label than an NPC line) - short,
+  -- second-person, no jargon. Kept to ONE short line on purpose now: the
+  -- bubble floats directly above his head with no box of its own to wrap
+  -- into (see TasksActivePanel), so a long line would just clip.
+  local slots = s.slots or 1
+  local busy = #activeList
+  if busy == 0 then
+    faqirText:setText(tr('Choose a task from my offers, hunter.'))
+  elseif busy < slots then
+    faqirText:setText(tr("Another task awaits, if you're ready."))
+  else
+    faqirText:setText(tr('Hands full! Return once a task concludes.'))
+  end
 
   -- Cards are rebuilt from scratch on every push - cheap at <=3 cards, and it
   -- sidesteps every hidden-widget/stale-handler pitfall of pooling them.
   listPanel:destroyChildren()
 
-  if #activeList > 0 then
-    wasShowingEmptyState = false
-    faqirBubble:setVisible(false)
-    faqirCreature:setVisible(false)
-
-    for _, task in ipairs(activeList) do
+  -- pcall per slot (Mizo bug report 2026-08-04: the row was rendering
+  -- completely empty, mascot only) - g_ui.createWidget/getChildById calls
+  -- were unguarded, so ANY single bad slot (e.g. one bogus task entry) threw
+  -- and killed the rest of the loop with no visible error, taking every
+  -- OTHER slot down with it. Now a broken slot logs and gets skipped; the
+  -- other two still render.
+  local function buildSlot(i)
+    local task = activeList[i]
+    if task then
       local card = g_ui.createWidget('ActiveTaskCard', listPanel)
       card:getChildById('name'):setText(task.name)
-      card:getChildById('progressText'):setText(('%d / %d killed'):format(task.progress, task.target))
+      local progressLabel = card:getChildById('progressText')
+      progressLabel:setText(('%d / %d killed'):format(task.progress, task.target))
+      -- Brief green flash when the kill count actually went up since the
+      -- last push - a small "yes, that counted" confirmation instead of the
+      -- number just silently being a different number now.
+      if task.progress > (lastKillCounts[task.id] or 0) then
+        flashKillCount(progressLabel)
+      end
+      lastKillCounts[task.id] = task.progress
       local percent = 0
       if task.target > 0 then
         percent = math.min(100, math.floor(task.progress * 100 / task.target))
@@ -986,29 +1260,37 @@ function fillActive(activeList, s)
           anchor = AnchorHorizontalCenter,
         }, cancel, cancel)
       end
+    elseif i <= slots then
+      local card = g_ui.createWidget('TaskSlotEmpty', listPanel)
+      card:getChildById('text'):setText(tr('Empty slot - pick a task from the Offers tab.'))
+    else
+      local card = g_ui.createWidget('TaskSlotLocked', listPanel)
+      card:getChildById('teaser'):setText(tr('+1 concurrent task - unlock in the webshop.'))
     end
-  else
-    -- Empty state: no cards at all rather than a disabled button next to an
-    -- empty bar - both described a task that doesn't exist. Faqir himself,
-    -- big, with a speech bubble carrying the message, fills that space.
-    faqirBubble:setVisible(true)
-    faqirCreature:setVisible(true)
-    faqirBubble:getChildById('faqirBubbleTitle'):setText(tr('Faqir waits.'))
-    faqirBubble:getChildById('faqirBubbleText'):setText(tr('Choose a task from the offers Tab.'))
-    faqirCreature:setOutfit(FAQIR_OUTFIT)
-
-    if wasShowingEmptyState ~= true then
-      materializeFaqir(faqirCreature)
-    end
-    wasShowingEmptyState = true
   end
 
-  -- "Unlock extra slots?" (Mizo): shown ONLY while there is something left to
-  -- unlock AND the server told us which shop offer sells it - hidden entirely
-  -- once expanded to 3, and on v1 servers that don't carry the field at all.
-  if s.v2 and s.slots and s.slots < 3 and s.shopoffer then
+  for i = 1, 3 do
+    local ok, err = pcall(buildSlot, i)
+    if not ok then
+      g_logger.error('game_tasks fillActive: slot ' .. i .. ' failed to build - ' .. tostring(err))
+    end
+  end
+
+  -- Dynamic CTA (Mizo): count-aware text ("Unlock 1/2 more task slot(s)")
+  -- instead of the old static "Unlock extra slots?" - shown ONLY while
+  -- something is actually left to unlock AND the server told us which shop
+  -- offer sells it; hidden entirely once expanded to 3, and on v1 servers
+  -- that don't carry the field at all.
+  local locked = math.max(0, 3 - slots)
+  if s.v2 and locked > 0 and s.shopoffer then
     local shopoffer = s.shopoffer
     unlockBtn:setVisible(true)
+    unlockBtn:setText(locked == 1 and tr('Unlock 1 more task slot') or tr('Unlock %d more task slots', locked))
+    -- 10028 is the CLIENT id for server item 10945 ("Soul Contract" - Task
+    -- Slot Expansion's icon on the website shop card, see web/pages/shop.php
+    -- itemMeta) - same icon on both surfaces so this button reads as "the
+    -- same thing you'd click Buy on over there" (Mizo 2026-08-04).
+    unlockBtn:getChildById('unlockIcon'):setItemId(10028)
     unlockBtn.onClick = function()
       -- The site scrolls to and gold-highlights this exact card.
       g_platform.openUrl('https://theotserver.com/?page=shop#offer-' .. shopoffer)
@@ -1016,94 +1298,63 @@ function fillActive(activeList, s)
   else
     unlockBtn:setVisible(false)
   end
-
-  -- Exp-wallet readout (v2 field; label-first version of the hourglass-purse
-  -- idea). Hidden when the payload doesn't carry the field.
-  if s.walletMinutes and s.walletCap then
-    walletLabel:setVisible(true)
-    walletLabel:setText(('Exp wallet: %d / %d min (+30%%)'):format(s.walletMinutes, s.walletCap))
-  else
-    walletLabel:setVisible(false)
-  end
 end
 
 -- ============================================================================
--- Marks tab (Faqir's Dagger, v2 only). Two sections: DAGGERS PLACED ON YOU
--- (red, with the pinned-contract kris art and each assassin's outfit small
--- next to their name, so the prey knows exactly who to watch for on screen -
--- matching the steal rule) and YOUR CONTRACT (green, rendered as a WANTED
--- poster with the prey's actual character outfit). Display-only: story lines
+-- Bounties tab (Faqir's Dagger, v2 only - player-facing label is "Bounties",
+-- Mizo 2026-08-04; internal ids/functions stay "marks" throughout, see
+-- ensureMarksTab). Side-by-side columns, full rework 2026-08-04: "HUNTING
+-- YOU" (red, left, one row per assassin) and "YOUR TARGET" (green, right, at
+-- most one row - Faqir only ever gives you a single live contract at a
+-- time). Replaces the earlier stacked-sections redesign - the two lists are
+-- mechanically the same instruction ("kill this person") from opposite
+-- directions, so mirrored columns read faster than two long full-width
+-- sections repeating the same visual language. Display-only: story lines
 -- arrive in chat from the server; this tab only reflects current state and
 -- never animates history.
 -- ============================================================================
-local MARKS_RED = '#FF6666'
-local MARKS_GREEN = '#66CC66'
+local MARKS_RED = '#E85A5A'
+local MARKS_GREEN = '#6FBF6F'
 
--- Kris contract art (approved by Mizo - "professional zigzag"). Monospace
--- only: MarksLine renders in terminus-10px, the single fixed-glyph-width font
--- this client ships. Note width 27 (2 rails + 21 inner + leading space),
--- blade centered. Per-line colours: title gold, by-names red, rails
--- parchment, blade steel, wax-seal line bold-red at the note's bottom-left
--- (a Label is one colour, so the seal takes its whole line red - the closest
--- this engine gets to an inline accent).
-local KRIS_NOTE_INNER = 21
-local KRIS_COLOR_BLADE = '#b8bec8'
-local KRIS_COLOR_RAIL = '#d8c8a0'
-local KRIS_COLOR_TITLE = '#FFD700'
-local KRIS_COLOR_SEAL = '#E24B4A'
-local KRIS_BLADE_TOP = {
-  '           (O)',
-  '           |=|',
-  '           |=|',
-  '          =[=]=',
-  '      <===={ + }====>',
-  '           \\ \\',
-  '           / /',
-}
-local KRIS_NOTE_TOP = ' .=========\\ \\=========.'
-local KRIS_NOTE_BOTTOM = " '=========/ /========='"
-local KRIS_BLADE_TAIL = {
-  '           \\ \\',
-  '           / /',
-  '           \\ \\',
-  '           / /',
-  '           \\ \\',
-  '           \\/',
-}
-
-local function krisNoteLine(content)
-  content = content or ''
-  if #content > KRIS_NOTE_INNER then
-    content = content:sub(1, KRIS_NOTE_INNER - 3) .. '...'
+-- Longest a name/subline is allowed to render before getting cut with "..."
+-- (plain ASCII, not a unicode ellipsis - the 8.60 client's font doesn't
+-- reliably carry non-ASCII glyphs). Columns are only ~185px wide with a
+-- 32px portrait eating into that, so this has to be conservative - tuned
+-- against verdana-11px-rounded, not measured pixel-exact.
+local function bountyTruncate(text, maxLen)
+  text = text or ''
+  if #text > maxLen then
+    return text:sub(1, math.max(1, maxLen - 3)) .. '...'
   end
-  local left = math.floor((KRIS_NOTE_INNER - #content) / 2)
-  return ' |' .. string.rep(' ', left) .. content
-    .. string.rep(' ', KRIS_NOTE_INNER - #content - left) .. '|'
+  return text
 end
 
-local function addMarksLine(parent, text, color)
-  local line = g_ui.createWidget('MarksLine', parent)
-  line:setText(text)
-  if color then line:setColor(color) end
-  return line
+-- Shared by both columns: portrait + truncated name + truncated
+-- "Vocation - Lvl N" subline.
+local function fillBountyRow(row, entry)
+  if entry.outfit and entry.outfit.type and entry.outfit.type > 0 then
+    row:getChildById('creature'):setOutfit(entry.outfit)
+  end
+  row:getChildById('nameplate'):setText(bountyTruncate(entry.name, 15))
+  row:getChildById('subline'):setText(
+    bountyTruncate(('%s - Lvl %d'):format(entry.vocation or '?', entry.level or 0), 24))
 end
 
-local function addKrisArt(parent, names)
-  for _, artLine in ipairs(KRIS_BLADE_TOP) do
-    addMarksLine(parent, artLine, KRIS_COLOR_BLADE)
+-- Rebuilds one column's row list in place (header/note labels are static
+-- otui children, only rowsBox gets destroyed/repopulated). emptyText shows
+-- a single muted placeholder row rather than leaving a bare gap under the
+-- header - same "always show something" rule the Active Task tab's 3-slot
+-- design follows.
+local function fillBountyColumn(column, entries, emptyText)
+  local rowsBox = column:getChildById('rowsBox')
+  rowsBox:destroyChildren()
+  if #entries == 0 then
+    local empty = g_ui.createWidget('MarksColumnEmpty', rowsBox)
+    empty:setText(emptyText)
+    return
   end
-  addMarksLine(parent, KRIS_NOTE_TOP, KRIS_COLOR_RAIL)
-  addMarksLine(parent, krisNoteLine(''), KRIS_COLOR_RAIL)
-  addMarksLine(parent, krisNoteLine('MARKED PREY'), KRIS_COLOR_TITLE)
-  addMarksLine(parent, krisNoteLine('-------------'), KRIS_COLOR_RAIL)
-  addMarksLine(parent, krisNoteLine(''), KRIS_COLOR_RAIL)
-  for _, name in ipairs(names) do
-    addMarksLine(parent, krisNoteLine('by  ' .. name), MARKS_RED)
-  end
-  addMarksLine(parent, ' | (*)' .. string.rep(' ', KRIS_NOTE_INNER - 4) .. '|', KRIS_COLOR_SEAL)
-  addMarksLine(parent, KRIS_NOTE_BOTTOM, KRIS_COLOR_RAIL)
-  for _, artLine in ipairs(KRIS_BLADE_TAIL) do
-    addMarksLine(parent, artLine, KRIS_COLOR_BLADE)
+  for _, entry in ipairs(entries) do
+    fillBountyRow(g_ui.createWidget('MarksRow', rowsBox), entry)
   end
 end
 
@@ -1113,8 +1364,21 @@ end
 function ensureMarksTab()
   if marksTab or not tasksTabBar then return end
   tabPanels.marks = g_ui.createWidget('TasksMarksPanel')
-  marksTab = tasksTabBar:addTab(tr('Marks'), tabPanels.marks)
+  -- "Bounties" (was "Marks" - Mizo 2026-08-04, confirmed via AskUserQuestion):
+  -- clearer to any MMO player at a glance. Internal ids/comments stay "marks"
+  -- throughout this file and the otui - only the player-facing label changed.
+  marksTab = tasksTabBar:addTab(tr('Bounties'), tabPanels.marks)
   marksTabDefaultColor = marksTab:getColor()
+  -- No static line: fillMarks sets the mascot's text every push, reacting to
+  -- whether the player is currently hunted, hunting, or neither.
+  setupFaqirMascot(tabPanels.marks)
+  -- addTab always APPENDS - Marks would otherwise land right of Reward Odds
+  -- (Mizo's call: Reward Odds stays the last tab, always). Move it back to
+  -- the end of the button row every time; harmless no-op on v1 sessions,
+  -- where this function never runs at all.
+  if oddsTab then
+    tasksTabBar.buttonsPanel:moveChildToIndex(oddsTab, tasksTabBar.buttonsPanel:getChildCount())
+  end
   -- Re-fit the row to make room, exactly like the hidden Hunt tab note says.
   layoutTabs()
 
@@ -1128,7 +1392,9 @@ function fillMarks(s)
   s = s or {}
   local panel = tabPanels.marks
   local list = panel:getChildById('marksScroll')
-  list:destroyChildren()
+  local threatColumn = list:getChildById('threatColumn')
+  local targetColumn = list:getChildById('targetColumn')
+  local gateMessage = list:getChildById('gateMessage')
 
   local daggers = s.daggers or {}
   local contract = s.contract
@@ -1143,7 +1409,7 @@ function fillMarks(s)
   removeEvent(marksTabPulseEvent)
   marksTabPulseEvent = nil
   if #daggers > 0 then
-    marksTab:setText(('%s (%d)'):format(tr('Marks'), #daggers))
+    marksTab:setText(('%s (%d)'):format(tr('Bounties'), #daggers))
     marksTab:setColor(MARKS_RED)
     local lit = true
     local function pulse()
@@ -1153,10 +1419,21 @@ function fillMarks(s)
     end
     marksTabPulseEvent = scheduleEvent(pulse, 700)
   else
-    marksTab:setText(tr('Marks'))
+    marksTab:setText(tr('Bounties'))
     marksTab:setColor(marksTabDefaultColor)
   end
   layoutTabs()
+
+  -- Faqir reacts to your own threat state (Mizo 2026-08-04) - plain Tibia
+  -- English, matching the section headers below.
+  local mascotText = panel:getChildById('faqirMascot'):getChildById('faqirBubbleText')
+  if #daggers > 0 then
+    mascotText:setText(tr('Blades are drawn against you. Strike first.'))
+  elseif contract then
+    mascotText:setText(tr('Your target awaits, hunter.'))
+  else
+    mascotText:setText(tr('No blood owed, on you or by you.'))
+  end
 
   -- PvP/Hunt level gate (Mizo final call: level 100 itself is still
   -- protected). The client reads its OWN level and only greys the controls -
@@ -1168,71 +1445,60 @@ function fillMarks(s)
   local gated = level < 101
   panel:getChildById('bladesBoard'):setEnabled(not gated)
   if gated then
-    local gate = g_ui.createWidget('MarksText', list)
-    gate:setText(tr('Unlocks at level 101 - the realm protects the young.'))
-    gate:setColor('#888888')
-  end
-
-  -- Never a blank panel.
-  if #daggers == 0 and not contract then
-    local empty = g_ui.createWidget('MarksText', list)
-    empty:setText(tr("No daggers bear your name. Faqir's book lies closed."))
+    gateMessage:setText(tr('Unlocks at level 101 - the realm protects the young.'))
+    gateMessage:setColor('#55534c')
+    gateMessage:setVisible(true)
+    threatColumn:setVisible(false)
+    targetColumn:setVisible(false)
     return
   end
+  gateMessage:setVisible(false)
+  threatColumn:setVisible(true)
+  targetColumn:setVisible(true)
 
   -- The showdown case: your contract's prey is ALSO one of your assassins.
-  -- Both reward lines pay out there, so both entries get the callout.
-  local mutualName = nil
+  -- Both reward lines pay out there - surfaced on the target column's own
+  -- note line now (used to be a per-entry "Two daggers, one grave" teaser;
+  -- there's no room for a third text line per row in the compact layout).
+  local mutual = false
   if contract then
     for _, dagger in ipairs(daggers) do
       if dagger.name == contract.name then
-        mutualName = dagger.name
+        mutual = true
         break
       end
     end
   end
 
-  if #daggers > 0 then
-    local header = g_ui.createWidget('MarksHeader', list)
-    header:setText(tr('DAGGERS PLACED ON YOU'))
-    header:setColor(MARKS_RED)
+  -- "HUNTING YOU" (left, red) - answers "what do I need to defend myself
+  -- from". One row per assassin; the steal-the-reward rule lives once on
+  -- the column note rather than repeating per row (Mizo bug report
+  -- 2026-08-04: it read as redundant with more than one hunter).
+  local threatHeader = threatColumn:getChildById('columnHeader')
+  threatHeader:setText(#daggers > 0 and ('%s (%d)'):format(tr('HUNTING YOU'), #daggers) or tr('HUNTING YOU'))
+  threatHeader:setColor(MARKS_RED)
+  local threatNote = threatColumn:getChildById('columnNote')
+  threatNote:setText(tr('Kill them first - steal the reward.'))
+  threatNote:setColor('#EFA83A')
+  fillBountyColumn(threatColumn, daggers, tr('Nobody hunting you.'))
 
-    local names = {}
-    for _, dagger in ipairs(daggers) do names[#names + 1] = dagger.name end
-    addKrisArt(list, names)
-
-    for _, dagger in ipairs(daggers) do
-      local row = g_ui.createWidget('MarksDaggerRow', list)
-      if dagger.outfit and dagger.outfit.type and dagger.outfit.type > 0 then
-        row:getChildById('creature'):setOutfit(dagger.outfit)
-      end
-      local text = ('%s  (Level %d)'):format(dagger.name, dagger.level or 0)
-      if dagger.name == mutualName then
-        text = text .. '  -  ' .. tr('Two daggers, one grave.')
-      end
-      row:getChildById('name'):setText(text)
-    end
+  -- "YOUR TARGET" (right, green) - who you're hunting. At most one row:
+  -- Faqir only ever hands out a single live contract at a time.
+  local targetHeader = targetColumn:getChildById('columnHeader')
+  targetHeader:setText(tr('YOUR TARGET'))
+  targetHeader:setColor(MARKS_GREEN)
+  local targetNote = targetColumn:getChildById('columnNote')
+  if mutual then
+    -- Rephrased in plain English (Mizo 2026-08-04: "I myself am confused
+    -- what does this mean" about the old "[x_x] Drawn blades walk beneath
+    -- the green skull" line) - say exactly what's happening: this is a
+    -- mutual showdown, both reward lines pay out.
+    targetNote:setText(tr("They're hunting you too - kill them and collect both rewards."))
+  else
+    targetNote:setText(tr('Kill them to claim the contract reward.'))
   end
-
-  -- Green-skull notice between the two sections.
-  if #daggers > 0 and contract then
-    local notice = g_ui.createWidget('MarksText', list)
-    notice:setText(tr('[x_x] Drawn blades walk beneath the green skull - watch for it.'))
-    notice:setColor(MARKS_GREEN)
-  end
-
-  if contract then
-    local header = g_ui.createWidget('MarksHeader', list)
-    header:setText(tr('YOUR CONTRACT'))
-    header:setColor(MARKS_GREEN)
-
-    local poster = g_ui.createWidget('MarksPoster', list)
-    if contract.outfit and contract.outfit.type and contract.outfit.type > 0 then
-      poster:getChildById('creature'):setOutfit(contract.outfit)
-    end
-    poster:getChildById('preyName'):setText(('%s (Level %d)'):format(contract.name, contract.level or 0))
-    poster:getChildById('badge'):setVisible(mutualName ~= nil)
-  end
+  targetNote:setColor(MARKS_GREEN)
+  fillBountyColumn(targetColumn, contract and { contract } or {}, tr('No target yet.'))
 end
 
 -- ============================================================================
@@ -1251,14 +1517,20 @@ function fillCatalog(chooseCost, matches)
 
   -- Empty state = ghosted skeleton rows. This client has no blur filter, so
   -- "blurred" is faked the only way it can be: unreadable pseudo-names drawn
-  -- in a near-background grey, so the eye reads "content lives here" without
-  -- being able to read any of it. Non-focusable and carrying no taskId, so
-  -- they can never be selected or hand-picked by accident.
+  -- in a muted grey, so the eye reads "content lives here" without being
+  -- able to read any of it. #33312c -> #55534c (Mizo 2026-08-04: the old
+  -- shade was tuned as "near-background" against catalogList's PREVIOUS
+  -- #636363 grey - once that background went dark (#120c04, same bug report
+  -- as the fix above), the same color became near-invisible instead of
+  -- tastefully faded. #55534c is the same muted tone TaskSlotLocked's own
+  -- teaser text already uses for "greyed out but still legible on dark".
+  -- Non-focusable and carrying no taskId, so these can never be selected or
+  -- hand-picked by accident.
   if #matches == 0 then
     for _, ghost in ipairs(CATALOG_GHOST_ROWS) do
       local row = g_ui.createWidget('TaskCatalogEntry', list)
       row:setFocusable(false)
-      row:setColor('#33312c')
+      row:setColor('#55534c')
       row:setText(ghost)
     end
   end
@@ -1276,7 +1548,7 @@ function fillCatalog(chooseCost, matches)
     else
       entry:setText(('[%d] %s (Tier %d)'):format(task.id, task.name, task.tier))
     end
-    entry.tierColor = CATALOG_TIER_COLOR[task.tier] or '#dfdfdf'
+    entry.tierColor = CATALOG_TIER_COLOR[task.tier] or '#F0E6D2'
     entry:setColor(entry.tierColor)
     entry.taskId = task.id
     entry.taskName = task.name
@@ -1305,7 +1577,7 @@ function applyCatalogActiveGrey()
         end
       elseif row.activeGrey then
         row.activeGrey = nil
-        row:setColor(row.tierColor or '#dfdfdf')
+        row:setColor(row.tierColor or '#F0E6D2')
         row:removeTooltip()
       end
     end
@@ -1316,29 +1588,134 @@ end
 -- Progress tab - streak/weekly/season pass status + season rankings, pushed
 -- on-demand when the tab is opened (see init()'s onTabChange). data is nil
 -- before the first push (window just opened, tab not yet visited).
+-- Redesigned 2026-08-04 (Mizo: "the x/x numbers are just reading as text") -
+-- three ProgressStatCard instances (big number + caption + bar/pips) instead
+-- of plain sentence Labels the server's pre-formatted text got dumped into
+-- verbatim. Needed raw numbers from the server to do this at all - see
+-- onTaskProgressOpcode's payload comment for the new fields.
 -- ============================================================================
+local PASS_BAR_COLOR = '#7F77DD'   -- matches TIER_COLOR[3] above, for reuse
+local WEEKLY_BAR_COLOR = '#378ADD' -- the bar's own long-standing color
+local PIP_FILLED_COLOR = '#EFA83A'
+local PIP_EMPTY_COLOR = '#4a453e'
+
+-- Mizo bug report 2026-08-04: "can't see the mouse hover effect" - the
+-- tooltip WAS set on the card (the otui !tooltip: per streakCard/
+-- weeklyCard/passCard instance), but g_tooltip (modules/corelib/ui/
+-- tooltip.lua) fires per-widget on THAT widget's own onHoverChange with no
+-- parent fallback whatsoever - whichever child is actually under the mouse
+-- is what gets checked for a .tooltip, and the card's children (number,
+-- caption, bar/pips) cover almost the entire 74px card, so the card's own
+-- tooltip only ever had a sliver of padding to actually trigger from.
+-- Propagating the same string onto every content-covering child is more
+-- certain than fighting hit-testing with `phantom` - ProgressBar can't be
+-- phantom here anyway (ALL of them in this file are phantom:false, needed
+-- to render their own fill), so this is the one fix that covers every
+-- child uniformly regardless of widget type.
+local function propagateCardTooltip(card)
+  local tip = card:getTooltip()
+  if not tip or tip == '' then return end
+  card:getChildById('statNumber'):setTooltip(tip)
+  card:getChildById('statCaption'):setTooltip(tip)
+  card:getChildById('statBar'):setTooltip(tip)
+  local pipRow = card:getChildById('pipRow')
+  pipRow:setTooltip(tip)
+  -- pipRow's own children (the 5 pip squares) cover ITS area the same way -
+  -- same fix, one level deeper, only relevant on the streak card.
+  for i = 1, 5 do
+    local pip = pipRow:getChildById('pip' .. i)
+    if pip then pip:setTooltip(tip) end
+  end
+end
+
+local function setStatBar(card, color, numberText, captionText, percent)
+  card:getChildById('pipRow'):setVisible(false)
+  local bar = card:getChildById('statBar')
+  bar:setVisible(true)
+  bar:setBackgroundColor(color)
+  bar:setPercent(percent)
+  local numberLabel = card:getChildById('statNumber')
+  numberLabel:setColor(color)
+  numberLabel:setText(numberText)
+  card:getChildById('statCaption'):setText(captionText)
+  propagateCardTooltip(card)
+end
+
+local function setStatPips(card, numberText, captionText, filled, cap)
+  card:getChildById('statBar'):setVisible(false)
+  local pipRow = card:getChildById('pipRow')
+  pipRow:setVisible(true)
+  for i = 1, 5 do
+    local pip = pipRow:getChildById('pip' .. i)
+    pip:setVisible(i <= cap)
+    if i <= cap then
+      pip:setBackgroundColor(i <= filled and PIP_FILLED_COLOR or PIP_EMPTY_COLOR)
+    end
+  end
+  card:getChildById('statNumber'):setColor(PIP_FILLED_COLOR)
+  card:getChildById('statNumber'):setText(numberText)
+  card:getChildById('statCaption'):setText(captionText)
+  propagateCardTooltip(card)
+end
+
 function fillProgress(data)
   local panel = tabPanels.progress
+  local streakCard = panel:getChildById('streakCard')
+  local weeklyCard = panel:getChildById('weeklyCard')
+  local passCard = panel:getChildById('passCard')
 
   if not data then
-    panel:getChildById('streakLabel'):setText(tr('Streak'))
-    panel:getChildById('weeklyLabel'):setText(tr('Weekly challenge'))
-    panel:getChildById('weeklyProgress'):setPercent(0)
-    panel:getChildById('passLabel'):setText(tr('Season pass'))
+    setStatPips(streakCard, '0', tr('day streak'), 0, 3)
+    setStatBar(weeklyCard, WEEKLY_BAR_COLOR, '0/0', tr('Weekly Challenge'), 0)
+    setStatBar(passCard, PASS_BAR_COLOR, tr('Tier -/-'), tr('Season Pass'), 0)
     panel:getChildById('rankingsList'):destroyChildren()
     return
   end
 
-  panel:getChildById('streakLabel'):setText(data.streakText)
-  panel:getChildById('weeklyLabel'):setText(data.weeklyText)
-  local percent = 0
-  if data.weeklyTarget > 0 then
-    percent = math.min(100, math.floor(data.weeklyCount * 100 / data.weeklyTarget))
-  end
-  panel:getChildById('weeklyProgress'):setPercent(percent)
-  panel:getChildById('passLabel'):setText(data.passText)
+  -- "day streak" reads fine at any count ("1 day streak", "7 day streak" -
+  -- same compound-modifier shape as "5-day trip"), no singular/plural split
+  -- needed.
+  setStatPips(streakCard, tostring(data.streakDays), tr('day streak'),
+    data.freezeTokens, math.max(1, data.freezeCap))
+  streakCard:getChildById('statHint'):setText(
+    tr('Every 5th day: free reroll. Every 7th: a freeze token. Every 15th: 50,000 gold + 15%% exp boost.'))
 
-  local RANK_COLOR = { [1] = '#FFD700', [2] = '#C0C0C0', [3] = '#CD7F32' } -- gold/silver/bronze
+  local weeklyPercent = 0
+  if data.weeklyTarget > 0 then
+    weeklyPercent = math.min(100, math.floor(data.weeklyCount * 100 / data.weeklyTarget))
+  end
+  setStatBar(weeklyCard, WEEKLY_BAR_COLOR,
+    ('%d/%d'):format(data.weeklyCount, data.weeklyTarget), tr('Weekly Challenge'), weeklyPercent)
+  weeklyCard:getChildById('statHint'):setText(
+    tr('5 tasks of any kind before Monday pays 50,000 gold + 10 min haste, automatically.'))
+
+  -- Bar fills and resets PER TIER (prevThreshold -> nextThreshold) rather
+  -- than crawling toward the season's final 70-task tier all season - see
+  -- Tasks.getPassProgress's own comment for why. nextThreshold == 0 means
+  -- every tier is already claimed.
+  --
+  -- Caption uses the SAME into/span numbers that drive the bar (Mizo bug
+  -- report 2026-08-04, character Bubble: "Tier 2/10" next to "8/10 tasks
+  -- this season" read as two competing fractions with the same denominator
+  -- meaning different things - tier count vs. season-cumulative threshold -
+  -- and the raw cumulative count didn't even match the bar's own fill %,
+  -- since the bar is relative to the current tier's band, not the season
+  -- total. Showing the tier-band numbers in both places keeps the caption
+  -- honest about what the bar is visibly doing.
+  local passPercent, passCaption = 100, tr('All tiers claimed!')
+  if data.passNextThreshold > 0 then
+    local span = data.passNextThreshold - data.passPrevThreshold
+    local into = math.min(span, math.max(0, data.passSeasonTasks - data.passPrevThreshold))
+    passPercent = span > 0 and math.floor(into * 100 / span) or 0
+    passCaption = ('%d/%d tasks to Tier %d'):format(into, span, data.passTier + 1)
+  end
+  setStatBar(passCard, PASS_BAR_COLOR,
+    ('Tier %d/%d'):format(data.passTier, data.passMaxTier), passCaption, passPercent)
+  passCard:getChildById('statHint'):setText(data.passNextThreshold > 0
+    and tr('Every task this season climbs the ladder - a reward waits at each of the 10 tiers.')
+    or tr('All 10 tiers claimed this season - the ladder resets next month.'))
+
+  local RANK_COLOR = { [1] = '#EFA83A', [2] = '#C0C0C0', [3] = '#CD7F32' } -- gold/silver/bronze
   local rankingsList = panel:getChildById('rankingsList')
   rankingsList:destroyChildren()
   local rank = 0
@@ -1356,17 +1733,69 @@ function fillProgress(data)
 end
 
 -- ============================================================================
--- Reward odds tab - real numbers, informational only, no buttons
+-- Reward odds tab - real numbers, informational only, no buttons. Overhaul
+-- 2026-08-04 (Mizo: "mention all the possible odds... all kinds of rewards
+-- you get through the task system") - every tier's actual grind/rich payout
+-- plus its Exp Boost Wallet ceiling, and a SEPARATE sigil/sliver section -
+-- unlike gold/premium/wallet-ceiling, sigil odds do NOT scale with the
+-- task's own reward tier (data/lib/tasks.lua's rollSigilDrop rolls ALL 5
+-- sigil tiers independently on every completion, gating tiers III-V to rich
+-- only) - the OLD one-row-per-tier layout conflated the two systems, since
+-- "tier" happens to mean something different in each. Content here is
+-- static (REWARD_POOL/SIGIL_DROP_CHANCE/WALLET_TIER_MAX are game-design
+-- facts, not runtime state) - mirrors the server by hand rather than adding
+-- a new payload just to describe numbers that rarely change.
 -- ============================================================================
+local ODDS_TIER_INFO = {
+  [1] = { grind = 'Always: 50,000 gold', rich = 'Rich (3x/day): 75,000 gold + Haste',
+          wallet = 'Rich also banks up to 15 min of exp bonus' },
+  [2] = { grind = 'Always: 60,000 gold', rich = 'Rich (3x/day): 90,000 gold',
+          wallet = 'Rich also banks up to 22 min of exp bonus' },
+  [3] = { grind = 'Always: 75,000 gold', rich = 'Rich (3x/day): 115,000 gold + skill progress',
+          wallet = 'Rich also banks up to 30 min of exp bonus' },
+  [4] = { grind = 'Always: 90,000 gold', rich = 'Rich (3x/day): 140,000 gold + 1 premium day',
+          wallet = 'Rich also banks up to 38 min of exp bonus' },
+  [5] = { grind = 'Always: 110,000 gold', rich = 'Rich (3x/day): 175,000 gold + 2 premium days, a Tier III sigil, a golden trophy',
+          wallet = 'Rich also banks up to 45 min of exp bonus' },
+}
+
 function fillOdds()
   local panel = tabPanels.odds
+  -- recursiveGetChildById, NOT plain (Mizo bug report 2026-08-04: tab showed
+  -- nothing at all) - oddsRow1-5/sigilText sit inside oddsScroll now (the
+  -- new ScrollablePanel wrapper added for the overhaul), two levels below
+  -- this panel, and plain getChildById only searches DIRECT children -
+  -- silent nil, no error, so this whole function was a no-op the entire
+  -- time. Same gotcha logged in [[reference-otui-gotchas]] #3.
   for tier = 1, 5 do
-    local row = panel:getChildById('oddsRow' .. tier)
+    local row = panel:recursiveGetChildById('oddsRow' .. tier)
     if row then
-      row:getChildById('tierLabel'):setText('Tier ' .. tier)
-      row:getChildById('tierLabel'):setColor(TIER_COLOR[tier])
-      row:getChildById('rewardText'):setText(SIGIL_CHANCE_BY_TIER[tier] .. '% sigil chance on completion')
-      row:getChildById('sigilBar'):setPercent(SIGIL_CHANCE_BY_TIER[tier])
+      local info = ODDS_TIER_INFO[tier]
+      local tierLabel = row:getChildById('tierLabel')
+      tierLabel:setText('TIER ' .. tier)
+      tierLabel:setColor(TIER_COLOR[tier])
+      row:getChildById('grindText'):setText(tr(info.grind))
+      row:getChildById('richText'):setText(tr(info.rich))
+      row:getChildById('walletText'):setText(tr(info.wallet))
     end
+  end
+
+  local sigilText = panel:recursiveGetChildById('sigilText')
+  if sigilText then
+    -- FATAL ERROR fix (Mizo 2026-08-04: "Unable to load module 'game_tasks'"
+    -- - bad argument #2 to 'tr', crashing the ENTIRE module on load, not
+    -- just this tab): tr() does its OWN string.format-style substitution
+    -- internally (see 'Unlock %d more task slots' above) - it needs the RAW
+    -- template plus the values as separate args. Pre-formatting with :format()
+    -- first and handing tr() the ALREADY-substituted string (with real "%"
+    -- characters left over from %% escapes) made tr() try to format THOSE
+    -- as new placeholders with no args to match, and it throws rather than
+    -- failing soft.
+    sigilText:setText(tr(
+      'Every completion: %d%% chance at Sigil I, %d%% at Sigil II.\n'
+      .. 'Rich completions only: %d%% Sigil III, %d%% Sigil IV, %d%% Sigil V.\n'
+      .. 'Rich completions also roll 8%% for a mana sliver, 5%% for a mirror sliver.',
+      SIGIL_CHANCE_BY_TIER[1], SIGIL_CHANCE_BY_TIER[2],
+      SIGIL_CHANCE_BY_TIER[3], SIGIL_CHANCE_BY_TIER[4], SIGIL_CHANCE_BY_TIER[5]))
   end
 end

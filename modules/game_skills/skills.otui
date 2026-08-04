@@ -180,6 +180,89 @@ MiniWindow
       margin-top: 3
       margin-bottom: 3
 
+    // Exp Boost Wallet (Mizo 2026-08-04, repositioned 2026-08-04 from under
+    // Stamina to right here - top of the Experience block, since that's the
+    // stat it actually affects) - a persistent character resource, other
+    // reward sources besides PvP Hunt can deposit into, so it lives here as
+    // a character stat rather than tucked inside one specific task's tab.
+    // Bag icon born hidden - only shown once opcode 76 proves the server
+    // sent wallet data (v1-era servers, or a fresh reload before the first
+    // push, show nothing rather than a stuck "0/0"). EXP badge is a plain
+    // Label stamped centered over the bag, not baked into a custom sprite -
+    // no new art required.
+    Panel
+      id: expWallet
+      height: 38
+      margin-bottom: 2
+      visible: false
+      // Syntax folded in here (Mizo 2026-08-04) instead of a separate
+      // always-visible hint Label below the bag - a reminder for people who
+      // already know the wallet exists belongs on hover, not permanently
+      // taking up a line under an icon most players glance at for a second.
+      !tooltip: tr("Earn exp bonus minutes by completing Faqir's Tasks - spend them anytime with !expboost <min>.")
+
+      // Bag (client 2853) by default; swapped to Backpack (2854) the moment
+      // cap > 120 proves the shop expansion was bought - sells "it got
+      // bigger" without any new art (see updateExpWallet in skills.lua).
+      UIItem
+        id: expWalletBag
+        anchors.left: parent.left
+        anchors.top: parent.top
+        size: 28 28
+        virtual: true
+
+      // This engine's Label has no text-shadow/outline property, so gold
+      // text alone would wash out against a light bag sprite - a small dark
+      // chip behind the badge guarantees contrast regardless of sprite colors.
+      Panel
+        id: expWalletBadgeBg
+        anchors.horizontalCenter: expWalletBag.horizontalCenter
+        anchors.bottom: expWalletBag.bottom
+        margin-bottom: 1
+        size: 22 10
+        background-color: #000000
+        opacity: 0.55
+
+      Label
+        id: expWalletBadge
+        anchors.horizontalCenter: expWalletBadgeBg.horizontalCenter
+        anchors.verticalCenter: expWalletBadgeBg.verticalCenter
+        !text: 'EXP'
+        font: terminus-10px
+        // White (was gold #ffe066) - Mizo 2026-08-04: matching this to the
+        // website shop's badge, which now uses the same white-on-dark-chip
+        // technique for real visual parity between the two surfaces.
+        color: #ffffff
+        text-align: center
+
+      // margin-top 6 (Mizo 2026-08-04: "push down the numbers... just push
+      // the bar and the numbers down a little bit") - was flush with the
+      // bag's own top edge, which read as pinned/cramped next to a 28px
+      // icon. Bag itself is untouched; only this block shifts.
+      Label
+        id: expWalletText
+        anchors.left: expWalletBag.right
+        anchors.top: expWalletBag.top
+        margin-left: 8
+        margin-top: 6
+        font: verdana-11px-rounded
+        color: white
+
+      // Fill bar (Claude's addition, 2026-08-04) - at-a-glance fullness
+      // without reading the text, same visual language as the Stamina/
+      // Experience bars above. Amber rather than green/red: this isn't a
+      // health-style "danger" resource, it's a "banked and ready" one.
+      ProgressBar
+        id: expWalletFill
+        anchors.left: expWalletBag.right
+        anchors.right: parent.right
+        anchors.top: expWalletText.bottom
+        margin-left: 8
+        margin-top: 3
+        height: 5
+        background-color: #d9a63a
+        phantom: false
+
     SkillButton
       id: experience
       height: 15
