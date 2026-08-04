@@ -1599,35 +1599,10 @@ local WEEKLY_BAR_COLOR = '#378ADD' -- the bar's own long-standing color
 local PIP_FILLED_COLOR = '#EFA83A'
 local PIP_EMPTY_COLOR = '#4a453e'
 
--- Mizo bug report 2026-08-04: "can't see the mouse hover effect" - the
--- tooltip WAS set on the card (the otui !tooltip: per streakCard/
--- weeklyCard/passCard instance), but g_tooltip (modules/corelib/ui/
--- tooltip.lua) fires per-widget on THAT widget's own onHoverChange with no
--- parent fallback whatsoever - whichever child is actually under the mouse
--- is what gets checked for a .tooltip, and the card's children (number,
--- caption, bar/pips) cover almost the entire 74px card, so the card's own
--- tooltip only ever had a sliver of padding to actually trigger from.
--- Propagating the same string onto every content-covering child is more
--- certain than fighting hit-testing with `phantom` - ProgressBar can't be
--- phantom here anyway (ALL of them in this file are phantom:false, needed
--- to render their own fill), so this is the one fix that covers every
--- child uniformly regardless of widget type.
-local function propagateCardTooltip(card)
-  local tip = card:getTooltip()
-  if not tip or tip == '' then return end
-  card:getChildById('statNumber'):setTooltip(tip)
-  card:getChildById('statCaption'):setTooltip(tip)
-  card:getChildById('statBar'):setTooltip(tip)
-  local pipRow = card:getChildById('pipRow')
-  pipRow:setTooltip(tip)
-  -- pipRow's own children (the 5 pip squares) cover ITS area the same way -
-  -- same fix, one level deeper, only relevant on the streak card.
-  for i = 1, 5 do
-    local pip = pipRow:getChildById('pip' .. i)
-    if pip then pip:setTooltip(tip) end
-  end
-end
-
+-- Card hover tooltips (and the propagateCardTooltip helper that made them
+-- actually work around child widgets swallowing the hover) were removed
+-- 2026-08-04 - each card's visible statHint line now carries the same
+-- explanation on screen, so the tooltip duplicated it.
 local function setStatBar(card, color, numberText, captionText, percent)
   card:getChildById('pipRow'):setVisible(false)
   local bar = card:getChildById('statBar')
@@ -1638,7 +1613,6 @@ local function setStatBar(card, color, numberText, captionText, percent)
   numberLabel:setColor(color)
   numberLabel:setText(numberText)
   card:getChildById('statCaption'):setText(captionText)
-  propagateCardTooltip(card)
 end
 
 local function setStatPips(card, numberText, captionText, filled, cap)
@@ -1655,7 +1629,6 @@ local function setStatPips(card, numberText, captionText, filled, cap)
   card:getChildById('statNumber'):setColor(PIP_FILLED_COLOR)
   card:getChildById('statNumber'):setText(numberText)
   card:getChildById('statCaption'):setText(captionText)
-  propagateCardTooltip(card)
 end
 
 function fillProgress(data)
@@ -1797,5 +1770,17 @@ function fillOdds()
       .. 'Rich completions also roll 8%% for a mana sliver, 5%% for a mirror sliver.',
       SIGIL_CHANCE_BY_TIER[1], SIGIL_CHANCE_BY_TIER[2],
       SIGIL_CHANCE_BY_TIER[3], SIGIL_CHANCE_BY_TIER[4], SIGIL_CHANCE_BY_TIER[5]))
+  end
+
+  -- Reward economy pass (Mizo 2026-08-04) - static text, no dynamic values,
+  -- so this is safe from the exact FATAL bug fixed just above: no pre-
+  -- formatting, no stray "%" characters at all in this string to begin with.
+  local bonusText = panel:recursiveGetChildById('bonusText')
+  if bonusText then
+    bonusText:setText(tr(
+      'Every task grants a short Haste burst - automatic, no claim needed.\n'
+      .. 'Weekly Challenge (5 tasks): gold, haste, Exp Wallet minutes, a chance at Sigil I or II, and sometimes a skill boost.\n'
+      .. 'Day 15 streak: gold, an exp boost, and a chance at Sigil I. Day 30 streak: guaranteed Sigil III, wallet minutes, and a chance at Sigil IV or V.\n'
+      .. 'Season Pass: 11 tiers now, capping in premium days and gold. Past tier 11? Every 10 more tasks still rolls a bonus.'))
   end
 end

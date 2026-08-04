@@ -772,33 +772,30 @@ TasksProgressPanel < Panel
     anchors.left: parent.left
     anchors.right: parent.right
 
-  // Tooltips (Mizo 2026-08-04: "what's the catch with these?") - the three
-  // cards showed numbers with no explanation of what they're FOR or what
-  // completing them actually pays out, which reads as arbitrary trivia
-  // rather than something worth chasing. Hover explains the payoff; the
-  // card itself stays a clean number, matching the exp wallet's own
-  // hover-for-detail pattern right above this tab.
+  // Mizo 2026-08-04: "what's the catch with these?" - each card's own
+  // visible statHint line below the bar now answers that directly (see
+  // fillProgress in tasks.lua), so the hover tooltip that used to carry
+  // the same explanation was redundant with content already on screen
+  // (Mizo 2026-08-04: "get rid of the hover tooltip... it's just
+  // redundant now") and was removed.
   ProgressStatCard
     id: streakCard
     anchors.top: parent.top
     margin-top: 66
     anchors.left: parent.left
     anchors.right: parent.right
-    !tooltip: tr("Complete at least one task a day to keep this going. Every 5th day: a free reroll. Every 7th day: a freeze token, banked to survive missing a single day. Every 15th day: 50,000 gold and a 15%% exp boost.")
 
   ProgressStatCard
     id: weeklyCard
     anchors.top: streakCard.bottom
     anchors.left: parent.left
     anchors.right: parent.right
-    !tooltip: tr("Complete 5 tasks of any kind before the week resets Monday - reward is 50,000 gold and 10 minutes of haste, granted automatically the moment you hit 5.")
 
   ProgressStatCard
     id: passCard
     anchors.top: weeklyCard.bottom
     anchors.left: parent.left
     anchors.right: parent.right
-    !tooltip: tr("Every task you complete this season climbs the Season Pass - 10 tiers, each with its own one-time reward waiting at the lamp. Resets at the start of next month.")
 
   // Same section-header language as the Bounties tab (MarksHeader) - was a
   // plain unstyled Label before, now matches the rest of the window.
@@ -932,6 +929,21 @@ TasksOddsPanel < Panel
     MarksText
       id: sigilText
       height: 60
+      text: -
+
+    // Reward economy pass (Mizo 2026-08-04: "mention things in a quick easy
+    // way to read in tibia terms in Odds tab") - separate section since none
+    // of this scales with a task's own reward tier either, same reasoning as
+    // the sigil block above. Text is static (not built per-tier like
+    // oddsRow1-5), set once in fillOdds.
+    MarksHeader
+      id: bonusHeader
+      color: #EFA83A
+      text: Streak, Weekly and Season Bonuses
+
+    MarksText
+      id: bonusText
+      height: 100
       text: -
 
   VerticalScrollBar
