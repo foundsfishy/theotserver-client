@@ -1318,26 +1318,50 @@ local MARKS_GREEN = '#6FBF6F'
 
 -- Longest a name/subline is allowed to render before getting cut with "..."
 -- (plain ASCII, not a unicode ellipsis - the 8.60 client's font doesn't
--- reliably carry non-ASCII glyphs). Columns are only ~185px wide with a
--- 32px portrait eating into that, so this has to be conservative - tuned
--- against verdana-11px-rounded, not measured pixel-exact.
-local function bountyTruncate(text, maxLen)
+-- reliably carry non-ASCII glyphs). Used to be a fixed character count, but
+-- that's only an average-glyph-width guess - a genuinely long character name
+-- (or a wide-lettered one well under the count) could still overflow the
+-- 137px column and get hard-clipped by the row's own bounds instead of
+-- eliding cleanly (Mizo bug report 2026-08-05: "long names having their
+-- name/level cutout"). Measures the ACTUAL rendered pixel width via the
+-- widget's own font (getTextSize, same API uitabbar/uipopupmenu use to size
+-- themselves) and binary-searches for the longest prefix that still fits, so
+-- it's exact regardless of which characters the name/vocation contain.
+-- 137 = MarksRow's own width (175) minus the 32px portrait and 6px
+-- margin-left - both nameplate and subline resolve to that same width.
+local MARKS_ROW_TEXT_WIDTH = 137
+
+local function fitRowText(widget, text)
   text = text or ''
-  if #text > maxLen then
-    return text:sub(1, math.max(1, maxLen - 3)) .. '...'
+  widget:setText(text)
+  if widget:getTextSize().width <= MARKS_ROW_TEXT_WIDTH then return end
+  local lo, hi = 0, #text
+  while lo < hi do
+    local mid = math.ceil((lo + hi) / 2)
+    widget:setText(text:sub(1, mid) .. '...')
+    if widget:getTextSize().width <= MARKS_ROW_TEXT_WIDTH then
+      lo = mid
+    else
+      hi = mid - 1
+    end
   end
-  return text
+  widget:setText(text:sub(1, lo) .. '...')
 end
 
--- Shared by both columns: portrait + truncated name + truncated
--- "Vocation - Lvl N" subline.
+-- Shared by both columns: portrait + pixel-fit name + pixel-fit
+-- "Lvl N - Vocation" subline. Level leads (Mizo bug report 2026-08-05: a
+-- long promoted-vocation name like "Mighty Conqueror" pushed the level off
+-- the end, so a pixel-fit "..." was landing mid-number and hiding the one
+-- number a player actually needs to decide whether to fight) - the fit still
+-- trims from the right when a row runs long, but now it eats into the
+-- (decorative) vocation name instead of the level.
 local function fillBountyRow(row, entry)
   if entry.outfit and entry.outfit.type and entry.outfit.type > 0 then
     row:getChildById('creature'):setOutfit(entry.outfit)
   end
-  row:getChildById('nameplate'):setText(bountyTruncate(entry.name, 15))
-  row:getChildById('subline'):setText(
-    bountyTruncate(('%s - Lvl %d'):format(entry.vocation or '?', entry.level or 0), 24))
+  fitRowText(row:getChildById('nameplate'), entry.name)
+  fitRowText(row:getChildById('subline'),
+    ('Lvl %d - %s'):format(entry.level or 0, entry.vocation or '?'))
 end
 
 -- Rebuilds one column's row list in place (header/note labels are static
@@ -1765,9 +1789,9 @@ function fillOdds()
     -- as new placeholders with no args to match, and it throws rather than
     -- failing soft.
     sigilText:setText(tr(
-      'Every completion: %d%% chance at Sigil I, %d%% at Sigil II.\n'
-      .. 'Rich completions only: %d%% Sigil III, %d%% Sigil IV, %d%% Sigil V.\n'
-      .. 'Rich completions also roll 8%% for a mana sliver, 5%% for a mirror sliver.',
+      'Sigil I %d%% / Sigil II %d%% - every completion.\n'
+      .. 'Sigil III/IV/V: %d%% / %d%% / %d%% - rich only.\n'
+      .. 'Mana sliver 8%% / Mirror sliver 5%% - rich only.',
       SIGIL_CHANCE_BY_TIER[1], SIGIL_CHANCE_BY_TIER[2],
       SIGIL_CHANCE_BY_TIER[3], SIGIL_CHANCE_BY_TIER[4], SIGIL_CHANCE_BY_TIER[5]))
   end
@@ -1778,9 +1802,13 @@ function fillOdds()
   local bonusText = panel:recursiveGetChildById('bonusText')
   if bonusText then
     bonusText:setText(tr(
-      'Every task grants a short Haste burst - automatic, no claim needed.\n'
-      .. 'Weekly Challenge (5 tasks): gold, haste, Exp Wallet minutes, a chance at Sigil I or II, and sometimes a skill boost.\n'
-      .. 'Day 15 streak: gold, an exp boost, and a chance at Sigil I. Day 30 streak: guaranteed Sigil III, wallet minutes, and a chance at Sigil IV or V.\n'
-      .. 'Season Pass: 11 tiers now, capping in premium days and gold. Past tier 11? Every 10 more tasks still rolls a bonus.'))
+      'Every task: free Haste burst, no claim needed.\n'
+      .. 'Weekly (5 tasks): gold, haste, wallet minutes.\n'
+      .. 'Plus a Sigil I/II chance and sometimes a skill boost.\n'
+      .. 'Day 15 streak: gold, exp boost, Sigil I chance.\n'
+      .. 'Day 30 streak: Sigil III guaranteed, wallet minutes.\n'
+      .. 'Plus a Sigil IV/V chance.\n'
+      .. 'Season Pass: 11 tiers, gold and premium days.\n'
+      .. 'Past tier 11: a bonus roll every 10 tasks.'))
   end
 end

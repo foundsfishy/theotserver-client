@@ -892,6 +892,13 @@ TasksOddsPanel < Panel
   // Scrollable now (was a flat verticalBox that fit in place) - 5 tier
   // blocks plus the sigil/sliver section run well past the old 5-thin-rows
   // budget, same reasoning Catalog/Bounties already scroll for.
+  //
+  // margin-bottom: 8 (Mizo bug report 2026-08-05: "last line cutting out
+  // with the window border") - unlike every other tab's scroll area, this
+  // one has no fixed footer button below it to give natural clearance from
+  // parent.bottom, so scrolled all the way down, bonusText's last line sat
+  // flush against the window's own edge. Matches the margin-bottom Catalog/
+  // Marks already give their own scroll areas before their footer buttons.
   ScrollablePanel
     id: oddsScroll
     anchors.top: parent.top
@@ -899,6 +906,7 @@ TasksOddsPanel < Panel
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.bottom: parent.bottom
+    margin-bottom: 8
     margin-right: 16
     vertical-scrollbar: oddsScrollBar
     layout: verticalBox
@@ -928,7 +936,7 @@ TasksOddsPanel < Panel
 
     MarksText
       id: sigilText
-      height: 60
+      height: 80
       text: -
 
     // Reward economy pass (Mizo 2026-08-04: "mention things in a quick easy
@@ -943,7 +951,14 @@ TasksOddsPanel < Panel
 
     MarksText
       id: bonusText
-      height: 100
+      // 160 (was 100, Mizo bug report 2026-08-05: "last line cutting off") -
+      // a fixed-height Label clips whatever wrapped content doesn't fit
+      // inside its own declared box, independent of the scroll area around
+      // it - 100 undershot the real wrapped-line count for this text at the
+      // tab's actual column width, so the last line (Season Pass) was
+      // getting cut by the label's OWN bounds, not the window edge. Sized
+      // for 8 short lines with margin to spare.
+      height: 160
       text: -
 
   VerticalScrollBar
