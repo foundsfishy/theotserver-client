@@ -541,7 +541,13 @@ end
 -- pulse speeds meaning the same thing.
 -- ============================================================================
 local TASKBAR_ALERT_COLOR = '#E85A5A' -- matches MARKS_RED below
-local TASKBAR_NORMAL_BORDER = '#EFA83A' -- TaskBarButton's own resting border
+-- Must match TaskBarButton's declared border-color in
+-- layouts/retro/styles/40-inventory.otui exactly. It read #EFA83A until
+-- 2026-08-05 while the widget declares #FFD700, and since every alert stop
+-- (including simply opening the window) writes this value back, the button's
+-- border permanently drifted to the wrong gold after the first open and never
+-- returned.
+local TASKBAR_NORMAL_BORDER = '#FFD700' -- TaskBarButton's own resting border
 local TASKBAR_ALERT_BLINKS = 6 -- 12 half-steps
 local TASKBAR_ALERT_STEP_MS = 250 -- 12 * 250 = 3000ms fast phase
 local TASKBAR_ALERT_PULSE_MS = 700 -- matches marksTabPulseEvent's cadence
@@ -556,6 +562,10 @@ local tasksBarAlertEvent = nil
 -- every relog - see checkTasksBarAlert's "resume, don't replay" branch).
 local knownDaggerCount = 0
 local knownContractName = nil
+-- Which character the two values above describe. Nil until the first push.
+-- See checkTasksBarAlert: without this the baseline leaked between characters
+-- on the same account and swallowed real contract alerts.
+local knownAlertCharacter = nil
 
 -- playFastPhase=true for a brand-new event (full 3s attention grab, then
 -- settle); false to resume straight into the steady breathe (an
@@ -608,6 +618,28 @@ end
 -- directly - a local here would be textually invisible to it and resolve to
 -- nil at call time despite parsing fine.
 function checkTasksBarAlert(state)
+  -- Reset the diff baseline when the CHARACTER changes (fix 2026-08-05).
+  -- Keeping this state across a plain relog is deliberate (see the note where
+  -- these are declared: a standing dagger shouldn't replay the fast blink
+  -- every login) - but it was being kept across a switch to a DIFFERENT
+  -- character too, which silently suppressed real alerts: char A with 1 dagger,
+  -- open the window, log out, log in char B who also has 1 dagger and no
+  -- contract -> `1 > 1` is false, so B got no warning at all that a live PvP
+  -- contract was on their head. Scoping the baseline to the character keeps
+  -- the resume-don't-replay behaviour where it belongs.
+  local localPlayer = g_game.getLocalPlayer()
+  local who = localPlayer and localPlayer:getName() or nil
+  if who ~= knownAlertCharacter then
+    knownAlertCharacter = who
+    knownDaggerCount = 0
+    knownContractName = nil
+    -- Same leak, same fix, for the other two per-character diff caches: char B
+    -- would otherwise inherit char A's "already flashed" offer ids and kill
+    -- counts, suppressing or misfiring their own progress feedback.
+    flashedActiveIds = {}
+    lastKillCounts = {}
+  end
+
   local daggerCount = #(state.daggers or {})
   local contractName = state.contract and state.contract.name or nil
   local isNew = (daggerCount > knownDaggerCount)
@@ -627,6 +659,10 @@ end
 
 function init()
   connect(g_game, { onGameStart = setTaskIcon, onGameEnd = offline })
+  -- Separate connect so Faqir's outfit is (re-)applied once sprite data exists
+  -- - see refreshFaqirOutfits for why doing this in init() alone renders
+  -- nothing. connect() happily takes more than one handler per event.
+  connect(g_game, { onGameStart = refreshFaqirOutfits })
 
   -- Lives inside the equipment (inventory) window's layout, not the topmenu -
   -- Mizo 2026-07-29 wanted it wide, under the equipment slots, filling that
@@ -767,6 +803,7 @@ end
 
 function terminate()
   disconnect(g_game, { onGameStart = setTaskIcon, onGameEnd = offline })
+  disconnect(g_game, { onGameStart = refreshFaqirOutfits })
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKSTATE_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKCATALOG_OPCODE)
   pcall(ProtocolGame.unregisterExtendedOpcode, TASKPROGRESS_OPCODE)
@@ -1115,6 +1152,27 @@ local FAQIR_CLICK_LINES = {
 -- from init()/ensureMarksTab(), both declared EARLIER in this file - a
 -- local here would be textually invisible to them (same reasoning as
 -- checkTasksBarAlert above).
+-- Re-applies the mascot outfit on every panel that has one.
+--
+-- MUST run on onGameStart, not only from init() (fix 2026-08-05). init() runs
+-- at the LOGIN SCREEN, before any game connection, and outfit/sprite data is
+-- tied to the connected game version - so setOutfit() at boot silently
+-- resolves to nothing and Faqir never appears at all. That is the exact trap
+-- setTaskIcon above already documents for setItemId, and Offers/Catalog/
+-- Progress/Odds were all still falling into it: those four call
+-- setupFaqirMascot once from init() and never again, so they rendered an empty
+-- gap where Faqir should stand. Active Task and Bounties escaped only because
+-- they happen to re-run their own setup while already online.
+function refreshFaqirOutfits()
+  for _, panel in pairs(tabPanels) do
+    local mascot = panel and panel:getChildById('faqirMascot')
+    local creature = mascot and mascot:getChildById('faqirCreature')
+    if creature then
+      creature:setOutfit(FAQIR_OUTFIT)
+    end
+  end
+end
+
 function setupFaqirMascot(panel, staticLine)
   local mascot = panel:getChildById('faqirMascot')
   if not mascot then return nil end

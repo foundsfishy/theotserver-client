@@ -962,6 +962,15 @@ function offline()
   limitBreakActive = false
   realExperience = nil -- don't leak this character's real exp into the next login
   realRegenerationTime = nil
+  -- Same reasoning as realExperience above (fix 2026-08-05): updateExpWallet
+  -- calls setVisible(true) and nothing ever undid it, so after a character
+  -- switch the next character saw the PREVIOUS one's banked wallet minutes
+  -- sitting in the Skills window until their own wallet opcode arrived. Hide
+  -- it again; the next push re-shows it with the right numbers.
+  if skillsWindow then
+    local wallet = skillsWindow:recursiveGetChildById('expWallet')
+    if wallet then wallet:setVisible(false) end
+  end
   hungryBlinkOn = true
   pcall(function() modules.game_healthinfo.setHungryIcon(false) end)
   pcall(function() modules.game_inventory.setHungryIcon(false) end)
